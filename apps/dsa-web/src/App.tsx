@@ -4,6 +4,7 @@ import HomePage from './pages/HomePage';
 import BacktestPage from './pages/BacktestPage';
 import SettingsPage from './pages/SettingsPage';
 import NotFoundPage from './pages/NotFoundPage';
+import { PreferencesProvider } from './hooks/usePreferences';
 import './App.css';
 
 // 侧边导航图标
@@ -95,22 +96,24 @@ const DockNav: React.FC = () => {
 
 const App: React.FC = () => {
     return (
-        <Router>
-            <div className="flex min-h-screen bg-base">
-                {/* Dock 导航 */}
-                <DockNav/>
+        <PreferencesProvider>
+            <Router>
+                <div className="flex min-h-screen bg-base">
+                    {/* Dock 导航 */}
+                    <DockNav/>
 
-                {/* 主内容区 */}
-                <main className="flex-1 dock-safe-area">
-                    <Routes>
-                        <Route path="/" element={<HomePage/>}/>
-                        <Route path="/backtest" element={<BacktestPage/>}/>
-                        <Route path="/settings" element={<SettingsPage/>}/>
-                        <Route path="*" element={<NotFoundPage/>}/>
-                    </Routes>
-                </main>
-            </div>
-        </Router>
+                    {/* 主内容区 */}
+                    <main className="flex-1 dock-safe-area">
+                        <Routes>
+                            <Route path="/" element={<HomePage/>}/>
+                            <Route path="/backtest" element={<BacktestPage/>}/>
+                            <Route path="/settings" element={<SettingsPage/>}/>
+                            <Route path="*" element={<NotFoundPage/>}/>
+                        </Routes>
+                    </main>
+                </div>
+            </Router>
+        </PreferencesProvider>
     );
 };
 

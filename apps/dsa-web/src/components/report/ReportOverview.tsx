@@ -1,5 +1,6 @@
 import type React from 'react';
 import type { ReportMeta, ReportSummary as ReportSummaryType } from '../../types/analysis';
+import { usePreferences } from '../../hooks/usePreferences';
 import { ScoreGauge, Card } from '../common';
 import { formatDateTime } from '../../utils/format';
 
@@ -16,11 +17,15 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
   meta,
   summary
 }) => {
-  // 根据涨跌幅获取颜色
+  const { greenUpRedDown } = usePreferences();
+
+  // Price change color based on preference
   const getPriceChangeColor = (changePct: number | undefined): string => {
     if (changePct === undefined || changePct === null) return 'text-muted';
-    if (changePct > 0) return 'text-[#ff4d4d]'; // 红涨
-    if (changePct < 0) return 'text-[#00d46a]'; // 绿跌
+    const upColor = greenUpRedDown ? 'text-[#00d46a]' : 'text-[#ff4d4d]';
+    const downColor = greenUpRedDown ? 'text-[#ff4d4d]' : 'text-[#00d46a]';
+    if (changePct > 0) return upColor;
+    if (changePct < 0) return downColor;
     return 'text-muted';
   };
 

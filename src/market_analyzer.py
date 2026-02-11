@@ -380,8 +380,11 @@ class MarketAnalyzer:
         lines = [
             "| 指数 | 最新 | 涨跌幅 | 成交额(亿) |",
             "|------|------|--------|-----------|"]
+        config = get_config()
+        up_emoji = "🟢" if config.green_up_red_down else "🔴"
+        down_emoji = "🔴" if config.green_up_red_down else "🟢"
         for idx in overview.indices:
-            arrow = "🔴" if idx.change_pct < 0 else "🟢" if idx.change_pct > 0 else "⚪"
+            arrow = down_emoji if idx.change_pct < 0 else up_emoji if idx.change_pct > 0 else "⚪"
             amount_raw = idx.amount or 0.0
             amount_yi = amount_raw / 1e8 if amount_raw > 1e6 else amount_raw
             lines.append(f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | {amount_yi:.0f} |")
