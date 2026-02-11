@@ -579,6 +579,9 @@ def _extract_market_data_from_snapshot(
             data["change_pct"] = raw["change_pct"]
         ms = raw.get("market_snapshot") or {}
         if isinstance(ms, dict):
+            # Use close price as fallback for current_price
+            data.setdefault("current_price", ms.get("close") or ms.get("price"))
+            data.setdefault("change_pct", ms.get("pct_chg") or ms.get("change_pct"))
             for src_key, dst_key in [("open", "open_price"), ("high", "high_price"), ("low", "low_price"),
                                       ("prev_close", "prev_close"), ("volume", "volume"), ("amount", "amount"),
                                       ("amplitude", "amplitude"), ("turnover_rate", "turnover_rate"),

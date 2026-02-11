@@ -103,9 +103,12 @@ def _extract_market_data(context_snapshot: Any, raw_result: Any = None) -> Dict[
             data["current_price"] = raw["current_price"]
         if raw.get("change_pct") is not None:
             data["change_pct"] = raw["change_pct"]
-        # market_snapshot has OHLCV
+        # market_snapshot has OHLCV (keys: close, open, high, low, pct_chg, etc.)
         ms = raw.get("market_snapshot") or {}
         if isinstance(ms, dict):
+            # Use close price as fallback for current_price
+            data.setdefault("current_price", ms.get("close") or ms.get("price"))
+            data.setdefault("change_pct", ms.get("pct_chg") or ms.get("change_pct"))
             for src_key, dst_key in [("open", "open_price"), ("high", "high_price"), ("low", "low_price"),
                                       ("prev_close", "prev_close"), ("volume", "volume"), ("amount", "amount"),
                                       ("amplitude", "amplitude"), ("turnover_rate", "turnover_rate"),
