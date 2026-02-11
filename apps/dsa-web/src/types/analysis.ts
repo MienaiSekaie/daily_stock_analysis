@@ -23,6 +23,15 @@ export interface ReportMeta {
   createdAt: string;
   currentPrice?: number;
   changePct?: number;
+  openPrice?: number;
+  highPrice?: number;
+  lowPrice?: number;
+  prevClose?: number;
+  volume?: number;
+  amount?: number;
+  turnoverRate?: number;
+  volumeRatio?: number;
+  amplitude?: number;
 }
 
 /** 情绪标签 */

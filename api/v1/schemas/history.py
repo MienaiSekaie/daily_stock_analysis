@@ -105,6 +105,15 @@ class ReportMeta(BaseModel):
     created_at: Optional[str] = Field(None, description="创建时间")
     current_price: Optional[float] = Field(None, description="分析时股价")
     change_pct: Optional[float] = Field(None, description="分析时涨跌幅(%)")
+    open_price: Optional[float] = Field(None, description="开盘价")
+    high_price: Optional[float] = Field(None, description="最高价")
+    low_price: Optional[float] = Field(None, description="最低价")
+    prev_close: Optional[float] = Field(None, description="昨收价")
+    volume: Optional[float] = Field(None, description="成交量")
+    amount: Optional[float] = Field(None, description="成交额")
+    turnover_rate: Optional[float] = Field(None, description="换手率(%)")
+    volume_ratio: Optional[float] = Field(None, description="量比")
+    amplitude: Optional[float] = Field(None, description="振幅(%)")
 
 
 class ReportSummary(BaseModel):

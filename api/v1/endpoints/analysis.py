@@ -435,6 +435,10 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 
         if records:
             record = records[0]
+            # Extract market data from context_snapshot
+            market_data = _extract_market_data_from_snapshot(
+                getattr(record, 'context_snapshot', None)
+            )
             # Build report from DB record so completed tasks return real data
             report_dict = AnalysisReport(
                 meta=ReportMeta(
@@ -443,6 +447,17 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     stock_name=record.name,
                     report_type=getattr(record, 'report_type', None),
                     created_at=record.created_at.isoformat() if record.created_at else None,
+                    current_price=market_data.get("current_price"),
+                    change_pct=market_data.get("change_pct"),
+                    open_price=market_data.get("open_price"),
+                    high_price=market_data.get("high_price"),
+                    low_price=market_data.get("low_price"),
+                    prev_close=market_data.get("prev_close"),
+                    volume=market_data.get("volume"),
+                    amount=market_data.get("amount"),
+                    turnover_rate=market_data.get("turnover_rate"),
+                    volume_ratio=market_data.get("volume_ratio"),
+                    amplitude=market_data.get("amplitude"),
                 ),
                 summary=ReportSummary(
                     sentiment_score=record.sentiment_score,
@@ -495,6 +510,67 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 # 辅助函数
 # ============================================================
 
+def _extract_market_data_from_snapshot(context_snapshot_text: Optional[str]) -> Dict[str, Any]:
+    """
+    Extract market data (price, change_pct, open, high, low, etc.) from context_snapshot JSON text.
+
+    Args:
+        context_snapshot_text: JSON string of context_snapshot stored in DB
+
+    Returns:
+        Dict with extracted market data fields
+    """
+    data: Dict[str, Any] = {}
+    if not context_snapshot_text:
+        return data
+
+    try:
+        snapshot = json.loads(context_snapshot_text) if isinstance(context_snapshot_text, str) else context_snapshot_text
+    except (json.JSONDecodeError, TypeError):
+        return data
+
+    if not isinstance(snapshot, dict):
+        return data
+
+    enhanced_context = snapshot.get("enhanced_context") or {}
+    realtime = enhanced_context.get("realtime") or {}
+
+    data["current_price"] = realtime.get("price")
+    data["change_pct"] = realtime.get("change_pct") or realtime.get("change_60d")
+    data["turnover_rate"] = realtime.get("turnover_rate")
+    data["volume_ratio"] = realtime.get("volume_ratio")
+
+    # Try realtime_quote_raw as fallback
+    realtime_quote_raw = snapshot.get("realtime_quote_raw") or {}
+    if data["current_price"] is None:
+        data["current_price"] = realtime_quote_raw.get("price")
+        data["change_pct"] = data["change_pct"] or realtime_quote_raw.get("change_pct") or realtime_quote_raw.get("pct_chg")
+
+    # Daily OHLCV data from the latest row in daily data
+    daily_data = enhanced_context.get("daily_data") or {}
+    if isinstance(daily_data, dict):
+        # daily_data may be a dict with date keys or a list; try getting the latest
+        data["open_price"] = daily_data.get("open")
+        data["high_price"] = daily_data.get("high")
+        data["low_price"] = daily_data.get("low")
+        data["prev_close"] = daily_data.get("prev_close")
+        data["volume"] = daily_data.get("volume")
+        data["amount"] = daily_data.get("amount")
+        data["amplitude"] = daily_data.get("amplitude")
+
+    # Also try market_snapshot if available in realtime_quote_raw
+    for field_map in [("open", "open_price"), ("high", "high_price"), ("low", "low_price"),
+                      ("prev_close", "prev_close"), ("volume", "volume"), ("amount", "amount"),
+                      ("amplitude", "amplitude"), ("turnover_rate", "turnover_rate"),
+                      ("volume_ratio", "volume_ratio")]:
+        src_key, dst_key = field_map
+        if data.get(dst_key) is None:
+            data[dst_key] = realtime_quote_raw.get(src_key)
+
+    # Remove None values
+    return {k: v for k, v in data.items() if v is not None}
+
+
 def _build_analysis_report(
         report_data: Dict[str, Any],
         query_id: str,
@@ -526,6 +602,15 @@ def _build_analysis_report(
         created_at=meta_data.get("created_at", datetime.now().isoformat()),
         current_price=meta_data.get("current_price"),
         change_pct=meta_data.get("change_pct"),
+        open_price=meta_data.get("open_price"),
+        high_price=meta_data.get("high_price"),
+        low_price=meta_data.get("low_price"),
+        prev_close=meta_data.get("prev_close"),
+        volume=meta_data.get("volume"),
+        amount=meta_data.get("amount"),
+        turnover_rate=meta_data.get("turnover_rate"),
+        volume_ratio=meta_data.get("volume_ratio"),
+        amplitude=meta_data.get("amplitude"),
     )
 
     summary = ReportSummary(

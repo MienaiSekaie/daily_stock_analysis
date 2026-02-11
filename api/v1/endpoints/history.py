@@ -9,8 +9,9 @@
 2. 提供 GET /api/v1/history/{query_id} 历史详情查询接口
 """
 
+import json
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Query, Depends
 
@@ -33,6 +34,50 @@ from src.services.history_service import HistoryService
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _extract_market_data(context_snapshot: Any) -> Dict[str, Any]:
+    """Extract market data from context_snapshot (dict or JSON string)."""
+    data: Dict[str, Any] = {}
+    if not context_snapshot:
+        return data
+
+    snapshot = context_snapshot
+    if isinstance(snapshot, str):
+        try:
+            snapshot = json.loads(snapshot)
+        except (json.JSONDecodeError, TypeError):
+            return data
+
+    if not isinstance(snapshot, dict):
+        return data
+
+    enhanced_context = snapshot.get("enhanced_context") or {}
+    realtime = enhanced_context.get("realtime") or {}
+
+    data["current_price"] = realtime.get("price")
+    data["change_pct"] = realtime.get("change_pct") or realtime.get("change_60d")
+    data["turnover_rate"] = realtime.get("turnover_rate")
+    data["volume_ratio"] = realtime.get("volume_ratio")
+
+    # Fallback: realtime_quote_raw
+    realtime_quote_raw = snapshot.get("realtime_quote_raw") or {}
+    if data["current_price"] is None:
+        data["current_price"] = realtime_quote_raw.get("price")
+        data["change_pct"] = data["change_pct"] or realtime_quote_raw.get("change_pct") or realtime_quote_raw.get("pct_chg")
+
+    # OHLCV from daily_data or realtime_quote_raw
+    daily_data = enhanced_context.get("daily_data") or {}
+    for src_key, dst_key in [("open", "open_price"), ("high", "high_price"), ("low", "low_price"),
+                              ("prev_close", "prev_close"), ("volume", "volume"), ("amount", "amount"),
+                              ("amplitude", "amplitude"), ("turnover_rate", "turnover_rate"),
+                              ("volume_ratio", "volume_ratio")]:
+        if data.get(dst_key) is None and isinstance(daily_data, dict):
+            data[dst_key] = daily_data.get(src_key)
+        if data.get(dst_key) is None:
+            data[dst_key] = realtime_quote_raw.get(src_key)
+
+    return {k: v for k, v in data.items() if v is not None}
 
 
 @router.get(
@@ -158,23 +203,9 @@ def get_history_detail(
                 }
             )
         
-        # 从 context_snapshot 中提取价格信息
-        current_price = None
-        change_pct = None
-        context_snapshot = result.get("context_snapshot")
-        if context_snapshot and isinstance(context_snapshot, dict):
-            # 尝试从 enhanced_context.realtime 获取
-            enhanced_context = context_snapshot.get("enhanced_context") or {}
-            realtime = enhanced_context.get("realtime") or {}
-            current_price = realtime.get("price")
-            change_pct = realtime.get("change_pct") or realtime.get("change_60d")
-            
-            # 也尝试从 realtime_quote_raw 获取
-            if current_price is None:
-                realtime_quote_raw = context_snapshot.get("realtime_quote_raw") or {}
-                current_price = realtime_quote_raw.get("price")
-                change_pct = change_pct or realtime_quote_raw.get("change_pct") or realtime_quote_raw.get("pct_chg")
-        
+        # 从 context_snapshot 中提取价格和行情信息
+        market_data = _extract_market_data(result.get("context_snapshot"))
+
         # 构建响应模型
         meta = ReportMeta(
             query_id=result.get("query_id", query_id),
@@ -182,8 +213,17 @@ def get_history_detail(
             stock_name=result.get("stock_name"),
             report_type=result.get("report_type"),
             created_at=result.get("created_at"),
-            current_price=current_price,
-            change_pct=change_pct
+            current_price=market_data.get("current_price"),
+            change_pct=market_data.get("change_pct"),
+            open_price=market_data.get("open_price"),
+            high_price=market_data.get("high_price"),
+            low_price=market_data.get("low_price"),
+            prev_close=market_data.get("prev_close"),
+            volume=market_data.get("volume"),
+            amount=market_data.get("amount"),
+            turnover_rate=market_data.get("turnover_rate"),
+            volume_ratio=market_data.get("volume_ratio"),
+            amplitude=market_data.get("amplitude"),
         )
         
         summary = ReportSummary(
