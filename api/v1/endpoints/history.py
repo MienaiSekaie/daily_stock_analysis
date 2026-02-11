@@ -36,46 +36,70 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _extract_market_data(context_snapshot: Any) -> Dict[str, Any]:
-    """Extract market data from context_snapshot (dict or JSON string)."""
-    data: Dict[str, Any] = {}
-    if not context_snapshot:
-        return data
+def _extract_market_data(context_snapshot: Any, raw_result: Any = None) -> Dict[str, Any]:
+    """
+    Extract market data from context_snapshot and/or raw_result.
 
+    Tries multiple sources in order:
+    1. raw_result.current_price / change_pct / market_snapshot (most reliable)
+    2. context_snapshot.enhanced_context.realtime
+    3. context_snapshot.realtime_quote_raw
+    """
+    data: Dict[str, Any] = {}
+
+    # --- Source 1: raw_result (contains AnalysisResult.to_dict()) ---
+    raw = raw_result
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            raw = None
+    if isinstance(raw, dict):
+        if raw.get("current_price") is not None:
+            data["current_price"] = raw["current_price"]
+        if raw.get("change_pct") is not None:
+            data["change_pct"] = raw["change_pct"]
+        # market_snapshot has OHLCV
+        ms = raw.get("market_snapshot") or {}
+        if isinstance(ms, dict):
+            for src_key, dst_key in [("open", "open_price"), ("high", "high_price"), ("low", "low_price"),
+                                      ("prev_close", "prev_close"), ("volume", "volume"), ("amount", "amount"),
+                                      ("amplitude", "amplitude"), ("turnover_rate", "turnover_rate"),
+                                      ("volume_ratio", "volume_ratio")]:
+                if ms.get(src_key) is not None:
+                    data.setdefault(dst_key, ms[src_key])
+
+    # --- Source 2: context_snapshot ---
     snapshot = context_snapshot
     if isinstance(snapshot, str):
         try:
             snapshot = json.loads(snapshot)
         except (json.JSONDecodeError, TypeError):
-            return data
+            snapshot = None
 
-    if not isinstance(snapshot, dict):
-        return data
+    if isinstance(snapshot, dict):
+        enhanced_context = snapshot.get("enhanced_context") or {}
+        realtime = enhanced_context.get("realtime") or {}
 
-    enhanced_context = snapshot.get("enhanced_context") or {}
-    realtime = enhanced_context.get("realtime") or {}
+        data.setdefault("current_price", realtime.get("price"))
+        data.setdefault("change_pct", realtime.get("change_pct") or realtime.get("change_60d"))
+        data.setdefault("turnover_rate", realtime.get("turnover_rate"))
+        data.setdefault("volume_ratio", realtime.get("volume_ratio"))
 
-    data["current_price"] = realtime.get("price")
-    data["change_pct"] = realtime.get("change_pct") or realtime.get("change_60d")
-    data["turnover_rate"] = realtime.get("turnover_rate")
-    data["volume_ratio"] = realtime.get("volume_ratio")
+        # Fallback: realtime_quote_raw
+        realtime_quote_raw = snapshot.get("realtime_quote_raw") or {}
+        data.setdefault("current_price", realtime_quote_raw.get("price"))
+        data.setdefault("change_pct", realtime_quote_raw.get("change_pct") or realtime_quote_raw.get("pct_chg"))
 
-    # Fallback: realtime_quote_raw
-    realtime_quote_raw = snapshot.get("realtime_quote_raw") or {}
-    if data["current_price"] is None:
-        data["current_price"] = realtime_quote_raw.get("price")
-        data["change_pct"] = data["change_pct"] or realtime_quote_raw.get("change_pct") or realtime_quote_raw.get("pct_chg")
-
-    # OHLCV from daily_data or realtime_quote_raw
-    daily_data = enhanced_context.get("daily_data") or {}
-    for src_key, dst_key in [("open", "open_price"), ("high", "high_price"), ("low", "low_price"),
-                              ("prev_close", "prev_close"), ("volume", "volume"), ("amount", "amount"),
-                              ("amplitude", "amplitude"), ("turnover_rate", "turnover_rate"),
-                              ("volume_ratio", "volume_ratio")]:
-        if data.get(dst_key) is None and isinstance(daily_data, dict):
-            data[dst_key] = daily_data.get(src_key)
-        if data.get(dst_key) is None:
-            data[dst_key] = realtime_quote_raw.get(src_key)
+        # OHLCV from daily_data or realtime_quote_raw
+        daily_data = enhanced_context.get("daily_data") or {}
+        for src_key, dst_key in [("open", "open_price"), ("high", "high_price"), ("low", "low_price"),
+                                  ("prev_close", "prev_close"), ("volume", "volume"), ("amount", "amount"),
+                                  ("amplitude", "amplitude"), ("turnover_rate", "turnover_rate"),
+                                  ("volume_ratio", "volume_ratio")]:
+            if isinstance(daily_data, dict):
+                data.setdefault(dst_key, daily_data.get(src_key))
+            data.setdefault(dst_key, realtime_quote_raw.get(src_key))
 
     return {k: v for k, v in data.items() if v is not None}
 
@@ -203,8 +227,11 @@ def get_history_detail(
                 }
             )
         
-        # 从 context_snapshot 中提取价格和行情信息
-        market_data = _extract_market_data(result.get("context_snapshot"))
+        # 从 context_snapshot 和 raw_result 中提取价格和行情信息
+        market_data = _extract_market_data(
+            result.get("context_snapshot"),
+            raw_result=result.get("raw_result")
+        )
 
         # 构建响应模型
         meta = ReportMeta(

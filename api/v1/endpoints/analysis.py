@@ -435,9 +435,10 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 
         if records:
             record = records[0]
-            # Extract market data from context_snapshot
+            # Extract market data from context_snapshot and raw_result
             market_data = _extract_market_data_from_snapshot(
-                getattr(record, 'context_snapshot', None)
+                getattr(record, 'context_snapshot', None),
+                raw_result_text=getattr(record, 'raw_result', None)
             )
             # Build report from DB record so completed tasks return real data
             report_dict = AnalysisReport(
@@ -510,64 +511,72 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 # 辅助函数
 # ============================================================
 
-def _extract_market_data_from_snapshot(context_snapshot_text: Optional[str]) -> Dict[str, Any]:
+def _extract_market_data_from_snapshot(
+        context_snapshot_text: Optional[str],
+        raw_result_text: Optional[str] = None
+) -> Dict[str, Any]:
     """
-    Extract market data (price, change_pct, open, high, low, etc.) from context_snapshot JSON text.
+    Extract market data from DB record's context_snapshot and/or raw_result JSON text.
 
-    Args:
-        context_snapshot_text: JSON string of context_snapshot stored in DB
-
-    Returns:
-        Dict with extracted market data fields
+    Tries multiple sources:
+    1. raw_result.current_price / change_pct / market_snapshot (most reliable)
+    2. context_snapshot.enhanced_context.realtime
+    3. context_snapshot.realtime_quote_raw
     """
     data: Dict[str, Any] = {}
-    if not context_snapshot_text:
-        return data
 
-    try:
-        snapshot = json.loads(context_snapshot_text) if isinstance(context_snapshot_text, str) else context_snapshot_text
-    except (json.JSONDecodeError, TypeError):
-        return data
+    # --- Source 1: raw_result (AnalysisResult.to_dict()) ---
+    raw = None
+    if raw_result_text:
+        try:
+            raw = json.loads(raw_result_text) if isinstance(raw_result_text, str) else raw_result_text
+        except (json.JSONDecodeError, TypeError):
+            raw = None
 
-    if not isinstance(snapshot, dict):
-        return data
+    if isinstance(raw, dict):
+        if raw.get("current_price") is not None:
+            data["current_price"] = raw["current_price"]
+        if raw.get("change_pct") is not None:
+            data["change_pct"] = raw["change_pct"]
+        ms = raw.get("market_snapshot") or {}
+        if isinstance(ms, dict):
+            for src_key, dst_key in [("open", "open_price"), ("high", "high_price"), ("low", "low_price"),
+                                      ("prev_close", "prev_close"), ("volume", "volume"), ("amount", "amount"),
+                                      ("amplitude", "amplitude"), ("turnover_rate", "turnover_rate"),
+                                      ("volume_ratio", "volume_ratio")]:
+                if ms.get(src_key) is not None:
+                    data.setdefault(dst_key, ms[src_key])
 
-    enhanced_context = snapshot.get("enhanced_context") or {}
-    realtime = enhanced_context.get("realtime") or {}
+    # --- Source 2: context_snapshot ---
+    snapshot = None
+    if context_snapshot_text:
+        try:
+            snapshot = json.loads(context_snapshot_text) if isinstance(context_snapshot_text, str) else context_snapshot_text
+        except (json.JSONDecodeError, TypeError):
+            snapshot = None
 
-    data["current_price"] = realtime.get("price")
-    data["change_pct"] = realtime.get("change_pct") or realtime.get("change_60d")
-    data["turnover_rate"] = realtime.get("turnover_rate")
-    data["volume_ratio"] = realtime.get("volume_ratio")
+    if isinstance(snapshot, dict):
+        enhanced_context = snapshot.get("enhanced_context") or {}
+        realtime = enhanced_context.get("realtime") or {}
 
-    # Try realtime_quote_raw as fallback
-    realtime_quote_raw = snapshot.get("realtime_quote_raw") or {}
-    if data["current_price"] is None:
-        data["current_price"] = realtime_quote_raw.get("price")
-        data["change_pct"] = data["change_pct"] or realtime_quote_raw.get("change_pct") or realtime_quote_raw.get("pct_chg")
+        data.setdefault("current_price", realtime.get("price"))
+        data.setdefault("change_pct", realtime.get("change_pct") or realtime.get("change_60d"))
+        data.setdefault("turnover_rate", realtime.get("turnover_rate"))
+        data.setdefault("volume_ratio", realtime.get("volume_ratio"))
 
-    # Daily OHLCV data from the latest row in daily data
-    daily_data = enhanced_context.get("daily_data") or {}
-    if isinstance(daily_data, dict):
-        # daily_data may be a dict with date keys or a list; try getting the latest
-        data["open_price"] = daily_data.get("open")
-        data["high_price"] = daily_data.get("high")
-        data["low_price"] = daily_data.get("low")
-        data["prev_close"] = daily_data.get("prev_close")
-        data["volume"] = daily_data.get("volume")
-        data["amount"] = daily_data.get("amount")
-        data["amplitude"] = daily_data.get("amplitude")
+        realtime_quote_raw = snapshot.get("realtime_quote_raw") or {}
+        data.setdefault("current_price", realtime_quote_raw.get("price"))
+        data.setdefault("change_pct", realtime_quote_raw.get("change_pct") or realtime_quote_raw.get("pct_chg"))
 
-    # Also try market_snapshot if available in realtime_quote_raw
-    for field_map in [("open", "open_price"), ("high", "high_price"), ("low", "low_price"),
-                      ("prev_close", "prev_close"), ("volume", "volume"), ("amount", "amount"),
-                      ("amplitude", "amplitude"), ("turnover_rate", "turnover_rate"),
-                      ("volume_ratio", "volume_ratio")]:
-        src_key, dst_key = field_map
-        if data.get(dst_key) is None:
-            data[dst_key] = realtime_quote_raw.get(src_key)
+        daily_data = enhanced_context.get("daily_data") or {}
+        for src_key, dst_key in [("open", "open_price"), ("high", "high_price"), ("low", "low_price"),
+                                  ("prev_close", "prev_close"), ("volume", "volume"), ("amount", "amount"),
+                                  ("amplitude", "amplitude"), ("turnover_rate", "turnover_rate"),
+                                  ("volume_ratio", "volume_ratio")]:
+            if isinstance(daily_data, dict):
+                data.setdefault(dst_key, daily_data.get(src_key))
+            data.setdefault(dst_key, realtime_quote_raw.get(src_key))
 
-    # Remove None values
     return {k: v for k, v in data.items() if v is not None}
 
 
