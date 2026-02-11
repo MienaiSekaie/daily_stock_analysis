@@ -96,9 +96,9 @@ main.py → StockAnalysisPipeline (src/core/pipeline.py)
 ## Git Branching Workflow
 
 All changes follow this flow:
-1. **Create feature branch from `main`**: `git checkout main && git checkout -b feature/xxx`
+1. **Create feature branch from `my-release`**: `git checkout my-release && git checkout -b feature/xxx`
 2. **Implement and commit on the feature branch**
-3. **After verification passes, merge into release branch (`my-release`)**: `git checkout my-release && git merge feature/xxx`
+3. **After verification passes, merge back into `my-release`**: `git checkout my-release && git merge feature/xxx`
 
 ## Code Style
 
