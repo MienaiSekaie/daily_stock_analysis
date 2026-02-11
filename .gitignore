@@ -69,6 +69,7 @@ run.sh
 
 verify_*.py
 
+open_cmd.bat
 # ignore claude files
 .claude/
 

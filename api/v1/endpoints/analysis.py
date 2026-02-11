@@ -435,6 +435,11 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 
         if records:
             record = records[0]
+            # Extract market data from context_snapshot and raw_result
+            market_data = _extract_market_data_from_snapshot(
+                getattr(record, 'context_snapshot', None),
+                raw_result_text=getattr(record, 'raw_result', None)
+            )
             # Build report from DB record so completed tasks return real data
             report_dict = AnalysisReport(
                 meta=ReportMeta(
@@ -443,6 +448,17 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     stock_name=record.name,
                     report_type=getattr(record, 'report_type', None),
                     created_at=record.created_at.isoformat() if record.created_at else None,
+                    current_price=market_data.get("current_price"),
+                    change_pct=market_data.get("change_pct"),
+                    open_price=market_data.get("open_price"),
+                    high_price=market_data.get("high_price"),
+                    low_price=market_data.get("low_price"),
+                    prev_close=market_data.get("prev_close"),
+                    volume=market_data.get("volume"),
+                    amount=market_data.get("amount"),
+                    turnover_rate=market_data.get("turnover_rate"),
+                    volume_ratio=market_data.get("volume_ratio"),
+                    amplitude=market_data.get("amplitude"),
                 ),
                 summary=ReportSummary(
                     sentiment_score=record.sentiment_score,
@@ -495,6 +511,118 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 # 辅助函数
 # ============================================================
 
+def _parse_numeric(value: Any) -> Optional[float]:
+    """Parse a numeric value that may contain Chinese unit suffixes like '万股', '亿元', '%'."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    text = text.replace(',', '').replace('，', '')
+    if text.endswith('%'):
+        try:
+            return float(text[:-1])
+        except ValueError:
+            return None
+    for suffix in ['亿元', '亿股', '亿']:
+        if suffix in text:
+            try:
+                return float(text.split(suffix)[0].strip()) * 1e8
+            except ValueError:
+                return None
+    for suffix in ['万股', '万元', '万手', '万']:
+        if suffix in text:
+            try:
+                return float(text.split(suffix)[0].strip()) * 1e4
+            except ValueError:
+                return None
+    import re as _re
+    match = _re.match(r'^([+-]?\d+(?:\.\d+)?)', text)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_market_data_from_snapshot(
+        context_snapshot_text: Optional[str],
+        raw_result_text: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Extract market data from DB record's context_snapshot and/or raw_result JSON text.
+
+    Tries multiple sources:
+    1. raw_result.current_price / change_pct / market_snapshot (most reliable)
+    2. context_snapshot.enhanced_context.realtime
+    3. context_snapshot.realtime_quote_raw
+    """
+    data: Dict[str, Any] = {}
+
+    # --- Source 1: raw_result (AnalysisResult.to_dict()) ---
+    raw = None
+    if raw_result_text:
+        try:
+            raw = json.loads(raw_result_text) if isinstance(raw_result_text, str) else raw_result_text
+        except (json.JSONDecodeError, TypeError):
+            raw = None
+
+    if isinstance(raw, dict):
+        if raw.get("current_price") is not None:
+            data["current_price"] = raw["current_price"]
+        if raw.get("change_pct") is not None:
+            data["change_pct"] = raw["change_pct"]
+        ms = raw.get("market_snapshot") or {}
+        if isinstance(ms, dict):
+            # Use close price as fallback for current_price
+            data.setdefault("current_price", ms.get("close") or ms.get("price"))
+            data.setdefault("change_pct", ms.get("pct_chg") or ms.get("change_pct"))
+            for src_key, dst_key in [("open", "open_price"), ("high", "high_price"), ("low", "low_price"),
+                                      ("prev_close", "prev_close"), ("volume", "volume"), ("amount", "amount"),
+                                      ("amplitude", "amplitude"), ("turnover_rate", "turnover_rate"),
+                                      ("volume_ratio", "volume_ratio")]:
+                if ms.get(src_key) is not None:
+                    data.setdefault(dst_key, ms[src_key])
+
+    # --- Source 2: context_snapshot ---
+    snapshot = None
+    if context_snapshot_text:
+        try:
+            snapshot = json.loads(context_snapshot_text) if isinstance(context_snapshot_text, str) else context_snapshot_text
+        except (json.JSONDecodeError, TypeError):
+            snapshot = None
+
+    if isinstance(snapshot, dict):
+        enhanced_context = snapshot.get("enhanced_context") or {}
+        realtime = enhanced_context.get("realtime") or {}
+
+        data.setdefault("current_price", realtime.get("price"))
+        data.setdefault("change_pct", realtime.get("change_pct") or realtime.get("change_60d"))
+        data.setdefault("turnover_rate", realtime.get("turnover_rate"))
+        data.setdefault("volume_ratio", realtime.get("volume_ratio"))
+
+        realtime_quote_raw = snapshot.get("realtime_quote_raw") or {}
+        data.setdefault("current_price", realtime_quote_raw.get("price"))
+        data.setdefault("change_pct", realtime_quote_raw.get("change_pct") or realtime_quote_raw.get("pct_chg"))
+
+        daily_data = enhanced_context.get("daily_data") or {}
+        for src_key, dst_key in [("open", "open_price"), ("high", "high_price"), ("low", "low_price"),
+                                  ("prev_close", "prev_close"), ("volume", "volume"), ("amount", "amount"),
+                                  ("amplitude", "amplitude"), ("turnover_rate", "turnover_rate"),
+                                  ("volume_ratio", "volume_ratio")]:
+            if isinstance(daily_data, dict):
+                data.setdefault(dst_key, daily_data.get(src_key))
+            data.setdefault(dst_key, realtime_quote_raw.get(src_key))
+
+    # Sanitize: parse all values to float (handles '2528.18 万股' etc.)
+    return {k: v for k, v in ((k, _parse_numeric(v)) for k, v in data.items()) if v is not None}
+
+
 def _build_analysis_report(
         report_data: Dict[str, Any],
         query_id: str,
@@ -526,6 +654,15 @@ def _build_analysis_report(
         created_at=meta_data.get("created_at", datetime.now().isoformat()),
         current_price=meta_data.get("current_price"),
         change_pct=meta_data.get("change_pct"),
+        open_price=meta_data.get("open_price"),
+        high_price=meta_data.get("high_price"),
+        low_price=meta_data.get("low_price"),
+        prev_close=meta_data.get("prev_close"),
+        volume=meta_data.get("volume"),
+        amount=meta_data.get("amount"),
+        turnover_rate=meta_data.get("turnover_rate"),
+        volume_ratio=meta_data.get("volume_ratio"),
+        amplitude=meta_data.get("amplitude"),
     )
 
     summary = ReportSummary(
