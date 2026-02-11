@@ -1,5 +1,6 @@
 import type React from 'react';
 import type { ReportMeta } from '../../types/analysis';
+import { usePreferences } from '../../hooks/usePreferences';
 import { Card } from '../common';
 
 interface ReportPriceProps {
@@ -11,6 +12,8 @@ interface QuoteItemProps {
   value?: number | null;
   format?: (v: number) => string;
   colorBySign?: boolean;
+  upColor?: string;
+  downColor?: string;
 }
 
 const defaultFormat = (v: number): string => v.toFixed(2);
@@ -32,11 +35,13 @@ const QuoteItem: React.FC<QuoteItemProps> = ({
   value,
   format = defaultFormat,
   colorBySign = false,
+  upColor = 'text-[#00d46a]',
+  downColor = 'text-[#ff4d4d]',
 }) => {
   let textColor = 'text-white';
   if (colorBySign && value != null) {
-    if (value > 0) textColor = 'text-[#ff4d4d]';
-    else if (value < 0) textColor = 'text-[#00d46a]';
+    if (value > 0) textColor = upColor;
+    else if (value < 0) textColor = downColor;
     else textColor = 'text-muted';
   }
 
@@ -55,15 +60,19 @@ const QuoteItem: React.FC<QuoteItemProps> = ({
  * at the time of analysis. Terminal-themed style.
  */
 export const ReportPrice: React.FC<ReportPriceProps> = ({ meta }) => {
+  const { greenUpRedDown } = usePreferences();
+  const upColor = greenUpRedDown ? 'text-[#00d46a]' : 'text-[#ff4d4d]';
+  const downColor = greenUpRedDown ? 'text-[#ff4d4d]' : 'text-[#00d46a]';
+
   if (meta.currentPrice == null) {
     return null;
   }
 
-  // Price change color (A-share convention: red = up, green = down)
+  // Price change color based on preference
   const getPriceColor = (): string => {
     if (meta.changePct == null) return 'text-white';
-    if (meta.changePct > 0) return 'text-[#ff4d4d]';
-    if (meta.changePct < 0) return 'text-[#00d46a]';
+    if (meta.changePct > 0) return upColor;
+    if (meta.changePct < 0) return downColor;
     return 'text-muted';
   };
 
