@@ -686,8 +686,12 @@ def _build_analysis_report(
     if details_data:
         details = ReportDetails(
             news_content=details_data.get("news_summary") or details_data.get("news_content"),
-            raw_result=details_data,
-            context_snapshot=None
+            raw_result=details_data.get("raw_result") or details_data,
+            context_snapshot=None,
+            technical_analysis=details_data.get("technical_analysis"),
+            fundamental_analysis=details_data.get("fundamental_analysis"),
+            risk_warning=details_data.get("risk_warning"),
+            dashboard=details_data.get("dashboard"),
         )
 
     return AnalysisReport(

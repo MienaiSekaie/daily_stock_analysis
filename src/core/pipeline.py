@@ -12,6 +12,7 @@ A股自选股智能分析系统 - 核心分析流水线
 """
 
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
@@ -99,6 +100,11 @@ class StockAnalysisPipeline:
         else:
             logger.warning("搜索服务未启用（未配置 API Key）")
     
+    @staticmethod
+    def _is_us_stock(code: str) -> bool:
+        """Check if a stock code is a US stock ticker (e.g. AAPL, MSFT, BRK.B)."""
+        return bool(re.match(r'^[A-Za-z]{1,5}(\.[A-Za-z])?$', code))
+
     def fetch_and_save_stock_data(
         self, 
         code: str,
@@ -273,13 +279,49 @@ class StockAnalysisPipeline:
                     'yesterday': {}
                 }
             
+            # Step 5.5: US Stock Enhanced Analysis — run 6-module framework if US stock
+            us_stock_bundle = None
+            if self._is_us_stock(code) and getattr(self.config, 'enable_us_stock_enhanced', True):
+                try:
+                    from src.us_stock_modules import USStockEnhancer
+                    import pandas as pd
+
+                    # Fetch daily data from DB (need at least 60 rows for weekly resample)
+                    daily_df = None
+                    db_records = self.db.get_latest_data(code, days=90)
+                    if db_records and len(db_records) >= 20:
+                        rows = [r.to_dict() for r in db_records]
+                        daily_df = pd.DataFrame(rows)
+                        # Sort ascending by date (get_latest_data returns desc)
+                        daily_df.sort_values('date', inplace=True)
+                        daily_df.reset_index(drop=True, inplace=True)
+
+                    if daily_df is not None and len(daily_df) >= 20:
+                        us_enhancer = USStockEnhancer(self.config)
+                        us_stock_bundle = us_enhancer.analyze(
+                            code, stock_name, daily_df, news_context=news_context
+                        )
+                        logger.info(
+                            f"[{code}] US stock enhanced analysis completed, "
+                            f"modules: {us_stock_bundle.get_available_modules()}"
+                        )
+                    else:
+                        data_len = len(daily_df) if daily_df is not None else 0
+                        logger.info(
+                            f"[{code}] Insufficient data for US stock enhanced analysis "
+                            f"(got {data_len} rows, need >= 20)"
+                        )
+                except Exception as e:
+                    logger.warning(f"[{code}] US stock enhanced analysis failed: {e}")
+
             # Step 6: 增强上下文数据（添加实时行情、筹码、趋势分析结果、股票名称）
             enhanced_context = self._enhance_context(
-                context, 
-                realtime_quote, 
-                chip_data, 
+                context,
+                realtime_quote,
+                chip_data,
                 trend_result,
-                stock_name  # 传入股票名称
+                stock_name,  # 传入股票名称
+                us_stock_bundle=us_stock_bundle,  # Pass US stock bundle
             )
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
@@ -324,20 +366,22 @@ class StockAnalysisPipeline:
         realtime_quote,
         chip_data: Optional[ChipDistribution],
         trend_result: Optional[TrendAnalysisResult],
-        stock_name: str = ""
+        stock_name: str = "",
+        us_stock_bundle=None,
     ) -> Dict[str, Any]:
         """
         增强分析上下文
-        
+
         将实时行情、筹码分布、趋势分析结果、股票名称添加到上下文中
-        
+
         Args:
             context: 原始上下文
             realtime_quote: 实时行情数据（UnifiedRealtimeQuote 或 None）
             chip_data: 筹码分布数据
             trend_result: 趋势分析结果
             stock_name: 股票名称
-            
+            us_stock_bundle: USStockAnalysisBundle (for US stocks, or None)
+
         Returns:
             增强后的上下文
         """
@@ -396,7 +440,11 @@ class StockAnalysisPipeline:
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
             }
-        
+
+        # Add US stock enhanced analysis bundle
+        if us_stock_bundle is not None:
+            enhanced['us_stock_bundle'] = us_stock_bundle.to_dict()
+
         return enhanced
     
     def _describe_volume_ratio(self, volume_ratio: float) -> str:

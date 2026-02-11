@@ -2,7 +2,10 @@ import React from 'react';
 import type { AnalysisResult, AnalysisReport } from '../../types/analysis';
 import { ReportOverview } from './ReportOverview';
 import { ReportPrice } from './ReportPrice';
+import { ReportUsModules } from './ReportUsModules';
 import { ReportStrategy } from './ReportStrategy';
+import { ReportBattlePlan } from './ReportBattlePlan';
+import { ReportAnalysisText } from './ReportAnalysisText';
 import { ReportNews } from './ReportNews';
 import { ReportDetails } from './ReportDetails';
 
@@ -37,8 +40,22 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
       {/* 最新行情区 */}
       <ReportPrice meta={meta} />
 
+      {/* US 6-Module Scoring */}
+      <ReportUsModules usModules={details?.dashboard?.usModules} />
+
       {/* 策略点位区 */}
       <ReportStrategy strategy={strategy} />
+
+      {/* Battle Plan */}
+      <ReportBattlePlan battlePlan={details?.dashboard?.battlePlan} />
+
+      {/* Detailed Analysis Text */}
+      <ReportAnalysisText
+        technicalAnalysis={details?.technicalAnalysis}
+        fundamentalAnalysis={details?.fundamentalAnalysis}
+        riskWarning={details?.riskWarning}
+        intelligence={details?.dashboard?.intelligence}
+      />
 
       {/* 资讯区 */}
       <ReportNews queryId={queryId} />

@@ -316,10 +316,16 @@ def get_history_detail(
             take_profit=result.get("take_profit")
         )
         
+        raw = result.get("raw_result")
+        dashboard_data = raw.get("dashboard") if isinstance(raw, dict) else None
         details = ReportDetails(
             news_content=result.get("news_content"),
-            raw_result=result.get("raw_result"),
-            context_snapshot=result.get("context_snapshot")
+            raw_result=raw,
+            context_snapshot=result.get("context_snapshot"),
+            technical_analysis=raw.get("technical_analysis") if isinstance(raw, dict) else None,
+            fundamental_analysis=raw.get("fundamental_analysis") if isinstance(raw, dict) else None,
+            risk_warning=raw.get("risk_warning") if isinstance(raw, dict) else None,
+            dashboard=dashboard_data,
         )
         
         return AnalysisReport(

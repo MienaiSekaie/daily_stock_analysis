@@ -142,10 +142,14 @@ class ReportStrategy(BaseModel):
 
 class ReportDetails(BaseModel):
     """报告详情区"""
-    
+
     news_content: Optional[str] = Field(None, description="新闻摘要")
     raw_result: Optional[Any] = Field(None, description="原始分析结果（JSON）")
     context_snapshot: Optional[Any] = Field(None, description="分析时上下文快照（JSON）")
+    technical_analysis: Optional[str] = Field(None, description="技术面分析")
+    fundamental_analysis: Optional[str] = Field(None, description="基本面分析")
+    risk_warning: Optional[str] = Field(None, description="风险提示")
+    dashboard: Optional[Any] = Field(None, description="决策仪表盘数据（JSON）")
 
 
 class AnalysisReport(BaseModel):

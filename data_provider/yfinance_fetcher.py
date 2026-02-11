@@ -133,21 +133,19 @@ class YfinanceFetcher(BaseFetcher):
         2. 调用 yfinance API
         3. 处理返回数据
         """
-        import yfinance as yf
-        
+        from src.us_stock_modules.yf_utils import yf_download
+
         # 转换代码格式
         yf_code = self._convert_stock_code(stock_code)
-        
+
         logger.debug(f"调用 yfinance.download({yf_code}, {start_date}, {end_date})")
-        
+
         try:
-            # 使用 yfinance 下载数据
-            df = yf.download(
-                tickers=yf_code,
+            # 使用 yfinance 下载数据 (rate-limited wrapper)
+            df = yf_download(
+                yf_code,
                 start=start_date,
                 end=end_date,
-                progress=False,  # 禁止进度条
-                auto_adjust=True,  # 自动调整价格（复权）
             )
             
             if df.empty:
@@ -223,7 +221,7 @@ class YfinanceFetcher(BaseFetcher):
         """
         获取主要指数行情 (Yahoo Finance)
         """
-        import yfinance as yf
+        from src.us_stock_modules.yf_utils import yf_ticker
 
         # 映射关系：akshare代码 -> (yfinance代码, 名称)
         yf_mapping = {
@@ -239,7 +237,9 @@ class YfinanceFetcher(BaseFetcher):
         try:
             for ak_code, (yf_code, name) in yf_mapping.items():
                 try:
-                    ticker = yf.Ticker(yf_code)
+                    ticker = yf_ticker(yf_code)
+                    if ticker is None:
+                        continue
                     # 获取最近2天数据以计算涨跌
                     hist = ticker.history(period='2d')
                     if hist.empty:
@@ -310,18 +310,21 @@ class YfinanceFetcher(BaseFetcher):
         Returns:
             UnifiedRealtimeQuote 对象，获取失败返回 None
         """
-        import yfinance as yf
-        
+        from src.us_stock_modules.yf_utils import yf_ticker
+
         # 仅处理美股
         if not self._is_us_stock(stock_code):
             logger.debug(f"[Yfinance] {stock_code} 不是美股，跳过")
             return None
-        
+
         try:
             symbol = stock_code.strip().upper()
             logger.debug(f"[Yfinance] 获取美股 {symbol} 实时行情")
-            
-            ticker = yf.Ticker(symbol)
+
+            ticker = yf_ticker(symbol)
+            if ticker is None:
+                logger.warning(f"[Yfinance] 创建 {symbol} Ticker 失败")
+                return None
             
             # 尝试获取 fast_info（更快，但字段较少）
             try:

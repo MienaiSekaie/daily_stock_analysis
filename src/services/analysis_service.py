@@ -156,6 +156,8 @@ class AnalysisService:
                 "technical_analysis": result.technical_analysis,
                 "fundamental_analysis": result.fundamental_analysis,
                 "risk_warning": result.risk_warning,
+                "dashboard": getattr(result, "dashboard", None),
+                "raw_result": result.to_dict() if hasattr(result, "to_dict") else None,
             }
         }
         

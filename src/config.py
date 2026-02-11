@@ -158,6 +158,11 @@ class Config:
     log_dir: str = "./logs"  # 日志文件目录
     log_level: str = "INFO"  # 日志级别
     
+    # === US Stock Enhanced Analysis ===
+    enable_us_stock_enhanced: bool = True  # Master switch for 6-module US stock analysis
+    us_stock_macro_cache_ttl: int = 3600   # Macro data cache duration in seconds
+    us_stock_yfinance_timeout: int = 10    # yfinance request timeout in seconds
+
     # === 系统配置 ===
     max_workers: int = 3  # 低并发防封禁
     debug: bool = False
@@ -400,6 +405,10 @@ class Config:
             backtest_neutral_band_pct=float(os.getenv('BACKTEST_NEUTRAL_BAND_PCT', '2.0')),
             log_dir=os.getenv('LOG_DIR', './logs'),
             log_level=os.getenv('LOG_LEVEL', 'INFO'),
+            # US Stock Enhanced Analysis
+            enable_us_stock_enhanced=os.getenv('ENABLE_US_STOCK_ENHANCED', 'true').lower() == 'true',
+            us_stock_macro_cache_ttl=int(os.getenv('US_STOCK_MACRO_CACHE_TTL', '3600')),
+            us_stock_yfinance_timeout=int(os.getenv('US_STOCK_YFINANCE_TIMEOUT', '10')),
             max_workers=int(os.getenv('MAX_WORKERS', '3')),
             debug=os.getenv('DEBUG', 'false').lower() == 'true',
             http_proxy=os.getenv('HTTP_PROXY'),

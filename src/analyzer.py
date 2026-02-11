@@ -671,13 +671,16 @@ class GeminiAnalyzer:
         """检查分析器是否可用"""
         return self._model is not None or self._openai_client is not None
 
-    def _call_openai_api(self, prompt: str, generation_config: dict) -> str:
+    def _call_openai_api(
+        self, prompt: str, generation_config: dict, system_prompt_override: Optional[str] = None
+    ) -> str:
         """
         调用 OpenAI 兼容 API
 
         Args:
             prompt: 提示词
             generation_config: 生成配置
+            system_prompt_override: Optional system prompt override (e.g. for US stock analysis)
 
         Returns:
             响应文本
@@ -686,11 +689,14 @@ class GeminiAnalyzer:
         max_retries = config.gemini_max_retries
         base_delay = config.gemini_retry_delay
 
+        # Use override system prompt if provided, otherwise default
+        effective_system_prompt = system_prompt_override or self.SYSTEM_PROMPT
+
         def _build_base_request_kwargs() -> dict:
             kwargs = {
                 "model": self._current_model_name,
                 "messages": [
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "system", "content": effective_system_prompt},
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": generation_config.get('temperature', config.openai_temperature),
@@ -756,17 +762,19 @@ class GeminiAnalyzer:
         
         raise Exception("OpenAI API 调用失败，已达最大重试次数")
     
-    def _call_api_with_retry(self, prompt: str, generation_config: dict) -> str:
+    def _call_api_with_retry(
+        self, prompt: str, generation_config: dict, system_prompt_override: Optional[str] = None
+    ) -> str:
         """
         调用 AI API，带有重试和模型切换机制
-        
+
         优先级：Gemini > Gemini 备选模型 > OpenAI 兼容 API
-        
+
         处理 429 限流错误：
         1. 先指数退避重试
         2. 多次失败后切换到备选模型
         3. Gemini 完全失败后尝试 OpenAI
-        
+
         Args:
             prompt: 提示词
             generation_config: 生成配置
@@ -774,9 +782,22 @@ class GeminiAnalyzer:
         Returns:
             响应文本
         """
+        # If system_prompt_override is given, prepend it to the user prompt for Gemini
+        # (Gemini model was initialized with A-share system_instruction; we override by
+        # including the new system prompt at the top of the user message).
+        # For OpenAI, we pass it through to _call_openai_api.
+        effective_prompt = prompt
+        if system_prompt_override and not self._use_openai:
+            effective_prompt = (
+                f"[SYSTEM INSTRUCTION OVERRIDE — follow these instructions instead of the default system prompt]\n\n"
+                f"{system_prompt_override}\n\n"
+                f"---\n\n"
+                f"{prompt}"
+            )
+
         # 如果已经在使用 OpenAI 模式，直接调用 OpenAI
         if self._use_openai:
-            return self._call_openai_api(prompt, generation_config)
+            return self._call_openai_api(prompt, generation_config, system_prompt_override=system_prompt_override)
         
         config = get_config()
         max_retries = config.gemini_max_retries
@@ -795,7 +816,7 @@ class GeminiAnalyzer:
                     time.sleep(delay)
                 
                 response = self._model.generate_content(
-                    prompt,
+                    effective_prompt,
                     generation_config=generation_config,
                     request_options={"timeout": 120}
                 )
@@ -830,7 +851,9 @@ class GeminiAnalyzer:
         if self._openai_client:
             logger.warning("[Gemini] 所有重试失败，切换到 OpenAI 兼容 API")
             try:
-                return self._call_openai_api(prompt, generation_config)
+                return self._call_openai_api(
+                    prompt, generation_config, system_prompt_override=system_prompt_override
+                )
             except Exception as openai_error:
                 logger.error(f"[OpenAI] 备选 API 也失败: {openai_error}")
                 raise last_error or openai_error
@@ -840,44 +863,46 @@ class GeminiAnalyzer:
             self._init_openai_fallback()
             if self._openai_client:
                 try:
-                    return self._call_openai_api(prompt, generation_config)
+                    return self._call_openai_api(
+                        prompt, generation_config, system_prompt_override=system_prompt_override
+                    )
                 except Exception as openai_error:
                     logger.error(f"[OpenAI] 备选 API 也失败: {openai_error}")
                     raise last_error or openai_error
-        
+
         # 所有方式都失败
         raise last_error or Exception("所有 AI API 调用失败，已达最大重试次数")
     
     def analyze(
-        self, 
+        self,
         context: Dict[str, Any],
         news_context: Optional[str] = None
     ) -> AnalysisResult:
         """
         分析单只股票
-        
+
         流程：
         1. 格式化输入数据（技术面 + 新闻）
         2. 调用 Gemini API（带重试和模型切换）
         3. 解析 JSON 响应
         4. 返回结构化结果
-        
+
         Args:
             context: 从 storage.get_analysis_context() 获取的上下文数据
             news_context: 预先搜索的新闻内容（可选）
-            
+
         Returns:
             AnalysisResult 对象
         """
         code = context.get('code', 'Unknown')
         config = get_config()
-        
+
         # 请求前增加延时（防止连续请求触发限流）
         request_delay = config.gemini_request_delay
         if request_delay > 0:
             logger.debug(f"[LLM] 请求前等待 {request_delay:.1f} 秒...")
             time.sleep(request_delay)
-        
+
         # 优先从上下文获取股票名称（由 main.py 传入）
         name = context.get('stock_name')
         if not name or name.startswith('股票'):
@@ -887,7 +912,7 @@ class GeminiAnalyzer:
             else:
                 # 最后从映射表获取
                 name = STOCK_NAME_MAP.get(code, f'股票{code}')
-        
+
         # 如果模型不可用，返回默认结果
         if not self.is_available():
             return AnalysisResult(
@@ -902,10 +927,21 @@ class GeminiAnalyzer:
                 success=False,
                 error_message='Gemini API Key 未配置',
             )
-        
+
         try:
-            # 格式化输入（包含技术面数据和新闻）
-            prompt = self._format_prompt(context, name, news_context)
+            # Detect US stock and use dedicated prompt if enhanced data is available
+            system_prompt_override = None
+            if 'us_stock_bundle' in context:
+                from src.us_stock_modules.us_stock_prompt import (
+                    US_STOCK_SYSTEM_PROMPT,
+                    build_us_stock_prompt,
+                )
+                system_prompt_override = US_STOCK_SYSTEM_PROMPT
+                prompt = build_us_stock_prompt(context, news_context)
+                logger.info(f"[{code}] Using US stock enhanced prompt ({len(prompt)} chars)")
+            else:
+                # 格式化输入（包含技术面数据和新闻）
+                prompt = self._format_prompt(context, name, news_context)
             
             # 获取模型名称
             model_name = getattr(self, '_current_model_name', None)
@@ -937,7 +973,9 @@ class GeminiAnalyzer:
             
             # 使用带重试的 API 调用
             start_time = time.time()
-            response_text = self._call_api_with_retry(prompt, generation_config)
+            response_text = self._call_api_with_retry(
+                prompt, generation_config, system_prompt_override=system_prompt_override
+            )
             elapsed = time.time() - start_time
 
             # 记录响应信息

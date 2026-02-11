@@ -54,11 +54,64 @@ export interface ReportStrategy {
   takeProfit?: string;
 }
 
+/** US 模块评分 */
+export interface UsModuleScore {
+  score: number;
+  signal: string;
+  weight: number;
+}
+
+/** US 6-模块汇总 */
+export interface UsModules {
+  macro?: UsModuleScore;
+  sector?: UsModuleScore;
+  fundamental?: UsModuleScore;
+  technical?: UsModuleScore;
+  events?: UsModuleScore;
+  sentiment?: UsModuleScore;
+  weightedTotal?: number;
+}
+
+/** 交易场景 */
+export interface TradeScenario {
+  name: string;
+  trigger?: string;
+  entry?: number | string;
+  stopLoss?: number | string;
+  target?: number | string;
+  positionPct?: number | string;
+  riskReward?: string;
+  action?: string;
+}
+
+/** 作战计划 */
+export interface BattlePlan {
+  scenarios?: TradeScenario[];
+  actionChecklist?: string[];
+  riskWarnings?: string[];
+}
+
+/** 决策仪表盘 */
+export interface Dashboard {
+  coreConclusion?: Record<string, unknown>;
+  intelligence?: {
+    riskAlerts?: string[];
+    positiveCatalysts?: string[];
+    sentimentSummary?: string;
+  };
+  battlePlan?: BattlePlan;
+  usModules?: UsModules;
+}
+
 /** 详情区（可折叠） */
 export interface ReportDetails {
   newsContent?: string;
   rawResult?: Record<string, unknown>;
   contextSnapshot?: Record<string, unknown>;
+  technicalAnalysis?: string;
+  fundamentalAnalysis?: string;
+  riskWarning?: string;
+  dashboard?: Dashboard;
 }
 
 /** 完整分析报告 */
