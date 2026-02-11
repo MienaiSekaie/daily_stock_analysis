@@ -7,7 +7,8 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.deps import get_system_config_service
+from api.deps import get_config_dep, get_system_config_service
+from src.config import Config
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.system_config import (
     SystemConfigConflictResponse,
@@ -165,3 +166,17 @@ def get_system_config_schema(
                 "message": "Failed to load system configuration schema",
             },
         )
+
+
+@router.get(
+    "/preferences",
+    summary="Get display preferences",
+    description="Return lightweight display preference flags derived from configuration.",
+)
+def get_preferences(
+    config: Config = Depends(get_config_dep),
+) -> dict:
+    """Return display-related preferences for the frontend."""
+    return {
+        "green_up_red_down": config.green_up_red_down,
+    }
