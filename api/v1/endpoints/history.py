@@ -36,6 +36,50 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _parse_numeric(value: Any) -> Optional[float]:
+    """Parse a numeric value that may contain Chinese unit suffixes like '万股', '亿元', '%'."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    # Remove trailing units/suffixes
+    text = text.replace(',', '').replace('，', '')
+    # Handle percentage: '2.15%' -> 2.15
+    if text.endswith('%'):
+        try:
+            return float(text[:-1])
+        except ValueError:
+            return None
+    # Handle '亿' multiplier
+    for suffix in ['亿元', '亿股', '亿']:
+        if suffix in text:
+            try:
+                return float(text.split(suffix)[0].strip()) * 1e8
+            except ValueError:
+                return None
+    # Handle '万' multiplier
+    for suffix in ['万股', '万元', '万手', '万']:
+        if suffix in text:
+            try:
+                return float(text.split(suffix)[0].strip()) * 1e4
+            except ValueError:
+                return None
+    # Remove other trailing non-numeric chars (元, 股, etc.)
+    import re
+    match = re.match(r'^([+-]?\d+(?:\.\d+)?)', text)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+    return None
+
+
 def _extract_market_data(context_snapshot: Any, raw_result: Any = None) -> Dict[str, Any]:
     """
     Extract market data from context_snapshot and/or raw_result.
@@ -101,7 +145,8 @@ def _extract_market_data(context_snapshot: Any, raw_result: Any = None) -> Dict[
                 data.setdefault(dst_key, daily_data.get(src_key))
             data.setdefault(dst_key, realtime_quote_raw.get(src_key))
 
-    return {k: v for k, v in data.items() if v is not None}
+    # Sanitize: parse all values to float (handles '2528.18 万股' etc.)
+    return {k: v for k, v in ((k, _parse_numeric(v)) for k, v in data.items()) if v is not None}
 
 
 @router.get(

@@ -511,6 +511,45 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 # 辅助函数
 # ============================================================
 
+def _parse_numeric(value: Any) -> Optional[float]:
+    """Parse a numeric value that may contain Chinese unit suffixes like '万股', '亿元', '%'."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    text = text.replace(',', '').replace('，', '')
+    if text.endswith('%'):
+        try:
+            return float(text[:-1])
+        except ValueError:
+            return None
+    for suffix in ['亿元', '亿股', '亿']:
+        if suffix in text:
+            try:
+                return float(text.split(suffix)[0].strip()) * 1e8
+            except ValueError:
+                return None
+    for suffix in ['万股', '万元', '万手', '万']:
+        if suffix in text:
+            try:
+                return float(text.split(suffix)[0].strip()) * 1e4
+            except ValueError:
+                return None
+    import re as _re
+    match = _re.match(r'^([+-]?\d+(?:\.\d+)?)', text)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+    return None
+
+
 def _extract_market_data_from_snapshot(
         context_snapshot_text: Optional[str],
         raw_result_text: Optional[str] = None
@@ -577,7 +616,8 @@ def _extract_market_data_from_snapshot(
                 data.setdefault(dst_key, daily_data.get(src_key))
             data.setdefault(dst_key, realtime_quote_raw.get(src_key))
 
-    return {k: v for k, v in data.items() if v is not None}
+    # Sanitize: parse all values to float (handles '2528.18 万股' etc.)
+    return {k: v for k, v in ((k, _parse_numeric(v)) for k, v in data.items()) if v is not None}
 
 
 def _build_analysis_report(
