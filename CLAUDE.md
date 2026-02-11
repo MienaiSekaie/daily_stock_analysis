@@ -93,6 +93,13 @@ main.py → StockAnalysisPipeline (src/core/pipeline.py)
 - **Retry/resilience**: Uses `tenacity` for exponential backoff on API calls. Search service has built-in load balancing across API keys.
 - **Stock code conventions**: A-shares use 6-digit codes (600519), HK stocks are prefixed `hk` (hk00700), US stocks use ticker symbols (AAPL).
 
+## Git Branching Workflow
+
+All changes follow this flow:
+1. **Create feature branch from `main`**: `git checkout main && git checkout -b feature/xxx`
+2. **Implement and commit on the feature branch**
+3. **After verification passes, merge into release branch (`my-release`)**: `git checkout my-release && git merge feature/xxx`
+
 ## Code Style
 
 - **Python 3.10+**, line width **120 characters**
