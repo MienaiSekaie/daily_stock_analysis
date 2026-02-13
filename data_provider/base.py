@@ -319,6 +319,7 @@ class DataFetcherManager:
         from .pytdx_fetcher import PytdxFetcher
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
+        from .openbb_fetcher import OpenBBFetcher
         from src.config import get_config
 
         config = get_config()
@@ -329,6 +330,7 @@ class DataFetcherManager:
         tushare = TushareFetcher()  # 会根据 Token 配置自动调整优先级
         pytdx = PytdxFetcher()      # 通达信数据源
         baostock = BaostockFetcher()
+        openbb = OpenBBFetcher()    # OpenBB SDK for US stocks
         yfinance = YfinanceFetcher()
 
         # 初始化数据源列表
@@ -338,6 +340,7 @@ class DataFetcherManager:
             tushare,
             pytdx,
             baostock,
+            openbb,
             yfinance,
         ]
 

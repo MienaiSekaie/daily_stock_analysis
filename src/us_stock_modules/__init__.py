@@ -10,10 +10,11 @@ Six-module analysis framework for US equities:
 5. Event Calendar & Catalysts
 6. Sentiment & Flow
 
-All data sourced from yfinance (free). Modules run in parallel
-and feed structured data into a US-stock-specific AI prompt.
+Data sourced from Massive API (Polygon.io) and FRED. Modules run in
+parallel and feed structured data into a US-stock-specific AI prompt.
 """
 
 from src.us_stock_modules.enhancer import USStockEnhancer  # noqa: F401
+from src.us_stock_modules.module_analyzer import USStockModuleAnalyzer  # noqa: F401
 
-__all__ = ["USStockEnhancer"]
+__all__ = ["USStockEnhancer", "USStockModuleAnalyzer"]

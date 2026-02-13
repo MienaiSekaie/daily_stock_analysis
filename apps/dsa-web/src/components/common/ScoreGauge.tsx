@@ -91,7 +91,7 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
       {/* 标题 */}
       {showLabel && (
         <span className="label-uppercase mb-3 text-secondary">
-          恐惧贪婪指数
+          综合评分
         </span>
       )}
 

@@ -35,7 +35,7 @@ export interface ReportMeta {
 }
 
 /** 情绪标签 */
-export type SentimentLabel = '极度悲观' | '悲观' | '中性' | '乐观' | '极度乐观';
+export type SentimentLabel = 'Strong Bearish' | 'Bearish' | 'Neutral' | 'Bullish' | 'Strong Bullish';
 
 /** 报告概览区 */
 export interface ReportSummary {
@@ -72,6 +72,30 @@ export interface UsModules {
   weightedTotal?: number;
 }
 
+/** US 模块 LLM 分析洞察 */
+export interface UsModuleInsight {
+  moduleName: string;
+  displayName: string;
+  score: number;
+  analysis: string;
+  keyFindings: string[];
+  riskFactors: string[];
+  signal: string;
+  outlook: string;
+  success: boolean;
+  fallbackUsed: boolean;
+}
+
+/** US 6-模块 LLM 分析洞察汇总 */
+export interface UsModuleInsights {
+  macro?: UsModuleInsight;
+  sector?: UsModuleInsight;
+  fundamental?: UsModuleInsight;
+  technical?: UsModuleInsight;
+  events?: UsModuleInsight;
+  sentiment?: UsModuleInsight;
+}
+
 /** 交易场景 */
 export interface TradeScenario {
   name: string;
@@ -101,6 +125,7 @@ export interface Dashboard {
   };
   battlePlan?: BattlePlan;
   usModules?: UsModules;
+  usModuleInsights?: UsModuleInsights;
 }
 
 /** 详情区（可折叠） */
@@ -239,11 +264,11 @@ export interface ApiError {
 
 /** 根据情绪评分获取情绪标签 */
 export const getSentimentLabel = (score: number): SentimentLabel => {
-  if (score <= 20) return '极度悲观';
-  if (score <= 40) return '悲观';
-  if (score <= 60) return '中性';
-  if (score <= 80) return '乐观';
-  return '极度乐观';
+  if (score <= 20) return 'Strong Bearish';
+  if (score <= 40) return 'Bearish';
+  if (score <= 60) return 'Neutral';
+  if (score <= 80) return 'Bullish';
+  return 'Strong Bullish';
 };
 
 /** 根据情绪评分获取颜色 */

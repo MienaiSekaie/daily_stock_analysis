@@ -2,14 +2,13 @@
 """
 Module 3: Fundamental Snapshot
 
-Evaluates a US stock's fundamental health using yfinance Ticker.info:
-- Valuation: PE, forward PE, PEG, P/S
-- Growth: revenue growth, earnings growth
-- Margins: gross, operating, profit
+Evaluates a US stock's fundamental health:
+- Valuation: PE, PEG (computed), P/S
+- Growth: revenue growth, earnings growth (from income statements)
+- Margins: gross, operating, profit (from income statements)
 - Financial health: free cash flow, debt/equity, current ratio
-- Institutional ownership percentage
 
-All data sourced from yfinance (free).
+Data source: OpenBB SDK (FMP financial ratios + income statements)
 """
 
 import logging
@@ -79,7 +78,7 @@ class FundamentalResult:
 
 
 class FundamentalModule:
-    """Fundamental analysis using yfinance Ticker.info data."""
+    """Fundamental analysis using OpenBB SDK data."""
 
     def analyze(self, code: str) -> Optional[FundamentalResult]:
         """
@@ -92,40 +91,71 @@ class FundamentalModule:
             FundamentalResult or None if data unavailable
         """
         try:
-            from src.us_stock_modules.yf_utils import yf_ticker_info
+            from src.us_stock_modules.openbb_utils import (
+                obb_financial_ratios,
+                obb_income_statements,
+            )
 
-            info = yf_ticker_info(code)
+            ratios = obb_financial_ratios(code)
+            statements = obb_income_statements(code, limit=2)
 
-            if not info or len(info) < 5:
-                logger.warning(f"[{code}] No fundamental data available from yfinance")
+            if not ratios and not statements:
+                logger.warning(f"[{code}] No fundamental data available from OpenBB")
                 return None
 
             result = FundamentalResult()
 
-            # Extract valuation metrics
-            result.pe_ttm = self._safe_float(info.get("trailingPE"))
-            result.pe_forward = self._safe_float(info.get("forwardPE"))
-            result.peg = self._safe_float(info.get("pegRatio"))
-            result.ps_ttm = self._safe_float(info.get("priceToSalesTrailing12Months"))
+            # Valuation from financial ratios
+            result.pe_ttm = self._safe_float(ratios.get("price_to_earnings"))
+            result.ps_ttm = self._safe_float(ratios.get("price_to_sales"))
 
-            # Extract growth metrics (yfinance returns as decimal)
-            result.revenue_growth_yoy = self._safe_float(info.get("revenueGrowth"))
-            result.earnings_growth_yoy = self._safe_float(info.get("earningsGrowth"))
+            # Financial health from ratios
+            result.free_cashflow = self._safe_float(ratios.get("free_cash_flow"))
+            result.current_ratio = self._safe_float(ratios.get("current"))
+            de = self._safe_float(ratios.get("debt_to_equity"))
+            if de is not None and de < 10:
+                # Massive returns as ratio (e.g. 1.7), scoring expects percentage (170)
+                de = de * 100
+            result.debt_to_equity = de
 
-            # Extract margin metrics (yfinance returns as decimal)
-            result.gross_margin = self._safe_float(info.get("grossMargins"))
-            result.operating_margin = self._safe_float(info.get("operatingMargins"))
-            result.profit_margin = self._safe_float(info.get("profitMargins"))
+            # Growth and margins from income statements
+            if len(statements) >= 1:
+                latest = statements[0]
+                rev = self._safe_float(latest.get("revenue"))
+                gp = self._safe_float(latest.get("gross_profit"))
+                oi = self._safe_float(latest.get("operating_income"))
+                ni = self._safe_float(latest.get("consolidated_net_income_loss"))
 
-            # Extract financial health
-            result.free_cashflow = self._safe_float(info.get("freeCashflow"))
-            result.debt_to_equity = self._safe_float(info.get("debtToEquity"))
-            result.current_ratio = self._safe_float(info.get("currentRatio"))
+                if rev and rev > 0:
+                    if gp is not None:
+                        result.gross_margin = gp / rev
+                    if oi is not None:
+                        result.operating_margin = oi / rev
+                    if ni is not None:
+                        result.profit_margin = ni / rev
 
-            # Institutional ownership
-            held_pct = self._safe_float(info.get("heldPercentInstitutions"))
-            if held_pct is not None:
-                result.institutional_pct = held_pct * 100  # Convert from decimal to percentage
+            if len(statements) >= 2:
+                curr, prev = statements[0], statements[1]
+                curr_rev = self._safe_float(curr.get("revenue"))
+                prev_rev = self._safe_float(prev.get("revenue"))
+                if curr_rev and prev_rev and prev_rev > 0:
+                    result.revenue_growth_yoy = (curr_rev - prev_rev) / abs(prev_rev)
+
+                curr_eps = self._safe_float(curr.get("basic_earnings_per_share"))
+                prev_eps = self._safe_float(prev.get("basic_earnings_per_share"))
+                if curr_eps is not None and prev_eps is not None and abs(prev_eps) > 0.01:
+                    result.earnings_growth_yoy = (curr_eps - prev_eps) / abs(prev_eps)
+
+            # Compute PEG from PE and earnings growth
+            if (
+                result.pe_ttm is not None
+                and result.pe_ttm > 0
+                and result.earnings_growth_yoy is not None
+                and result.earnings_growth_yoy > 0
+            ):
+                growth_pct = result.earnings_growth_yoy * 100
+                if growth_pct > 0:
+                    result.peg = result.pe_ttm / growth_pct
 
             # Score the fundamentals
             self._calculate_scores(result)
@@ -136,9 +166,6 @@ class FundamentalModule:
             )
             return result
 
-        except ImportError:
-            logger.error("yfinance not installed, cannot run fundamental analysis")
-            return None
         except Exception as e:
             logger.warning(f"[{code}] Fundamental analysis failed: {e}")
             return None
@@ -183,7 +210,6 @@ class FundamentalModule:
         pe = result.pe_ttm
 
         if peg is not None and peg > 0:
-            # PEG-based valuation
             if peg < 0.8:
                 result.valuation_signal = "cheap"
                 return 90
@@ -203,7 +229,6 @@ class FundamentalModule:
                 result.valuation_signal = "expensive"
                 return 20
         elif pe is not None and pe > 0:
-            # PE-based fallback
             if pe < 12:
                 result.valuation_signal = "cheap"
                 return 85
@@ -228,7 +253,6 @@ class FundamentalModule:
         rev = result.revenue_growth_yoy
         earn = result.earnings_growth_yoy
 
-        # Use the better of revenue or earnings growth
         growth = None
         if rev is not None and earn is not None:
             growth = max(rev, earn)
@@ -267,7 +291,6 @@ class FundamentalModule:
         if gm is None:
             return 50
 
-        # Higher margins = better
         if gm > 0.60:
             return 90
         elif gm > 0.45:
@@ -288,7 +311,6 @@ class FundamentalModule:
 
         scores = []
 
-        # Debt/equity
         if dte is not None:
             if dte < 30:
                 scores.append(90)
@@ -301,7 +323,6 @@ class FundamentalModule:
             else:
                 scores.append(15)
 
-        # Free cash flow (positive is good)
         if fcf is not None:
             if fcf > 0:
                 scores.append(80)
@@ -319,7 +340,6 @@ class FundamentalModule:
             return None
         try:
             v = float(value)
-            # Filter out obviously wrong values
             if v != v:  # NaN check
                 return None
             return v

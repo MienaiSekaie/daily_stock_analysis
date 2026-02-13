@@ -937,8 +937,10 @@ class GeminiAnalyzer:
                     build_us_stock_prompt,
                 )
                 system_prompt_override = US_STOCK_SYSTEM_PROMPT
-                prompt = build_us_stock_prompt(context, news_context)
-                logger.info(f"[{code}] Using US stock enhanced prompt ({len(prompt)} chars)")
+                module_insights = context.get('us_module_insights')
+                prompt = build_us_stock_prompt(context, news_context, module_insights=module_insights)
+                mode_label = "synthesis (7-call)" if module_insights else "legacy (1-call)"
+                logger.info(f"[{code}] Using US stock {mode_label} prompt ({len(prompt)} chars)")
             else:
                 # 格式化输入（包含技术面数据和新闻）
                 prompt = self._format_prompt(context, name, news_context)

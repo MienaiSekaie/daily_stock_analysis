@@ -106,42 +106,45 @@ class USStockEnhancer:
 
         results = {}
 
-        # Use max_workers=3 to limit concurrent yfinance requests and reduce 429 errors.
-        # The global throttle in yf_utils.py enforces 0.5s gap between individual calls.
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        # OpenBB SDK handles rate limiting internally, no manual stagger needed.
+        max_workers = getattr(self.config, "us_stock_max_workers", 3)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
 
-            # Batch 1: Technical (local data, no yfinance) + Macro (cached, 1 call if cache hit)
+            # Technical (local data, no API call)
             futures["technical"] = executor.submit(
                 self._run_module, "technical", self.technical.analyze, code, daily_df
             )
+            # Macro (FRED via OpenBB, cached after first run)
             if self.macro is not None:
                 futures["macro"] = executor.submit(
                     self._run_module, "macro", self.macro.analyze
                 )
-
-            # Batch 2: Stagger remaining yfinance-heavy modules with small delays
+            # Fundamental (FMP via OpenBB)
             if self.fundamental is not None:
                 futures["fundamental"] = executor.submit(
-                    self._run_module_delayed, "fundamental", 0.5, self.fundamental.analyze, code
+                    self._run_module, "fundamental", self.fundamental.analyze, code
                 )
+            # Sector (price data via OpenBB)
             if self.sector is not None:
                 futures["sector"] = executor.submit(
-                    self._run_module_delayed, "sector", 1.0, self.sector.analyze, code
+                    self._run_module, "sector", self.sector.analyze, code
                 )
+            # Events (earnings calendar via OpenBB)
             if self.events is not None:
                 futures["events"] = executor.submit(
-                    self._run_module_delayed, "events", 1.5, self.events.analyze, code
+                    self._run_module, "events", self.events.analyze, code
                 )
+            # Sentiment (FMP + yfinance consensus via OpenBB)
             if self.sentiment is not None:
                 futures["sentiment"] = executor.submit(
-                    self._run_module_delayed, "sentiment", 2.0, self.sentiment.analyze, code, news_context
+                    self._run_module, "sentiment", self.sentiment.analyze, code, news_context
                 )
 
             # Collect results
             for name, future in futures.items():
                 try:
-                    results[name] = future.result(timeout=60)
+                    results[name] = future.result(timeout=180)
                 except Exception as e:
                     logger.warning(f"[{code}] Module '{name}' timed out or failed: {e}")
                     results[name] = None
@@ -160,6 +163,6 @@ class USStockEnhancer:
             return None
 
     def _run_module_delayed(self, name: str, delay: float, func, *args, **kwargs):
-        """Run a module after an initial delay to stagger yfinance requests."""
+        """Run a module after an initial delay to stagger API requests."""
         time.sleep(delay)
         return self._run_module(name, func, *args, **kwargs)

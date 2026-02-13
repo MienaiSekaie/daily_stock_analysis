@@ -11,6 +11,7 @@ A股自选股智能分析系统 - 核心分析流水线
 4. 提供股票分析的核心功能
 """
 
+import json
 import logging
 import re
 import time
@@ -175,23 +176,27 @@ class StockAnalysisPipeline:
             stock_name = STOCK_NAME_MAP.get(code, '')
             
             # Step 1: 获取实时行情（量比、换手率等）- 使用统一入口，自动故障切换
+            # For US stocks, skip yfinance realtime (saves rate-limit budget for modules)
             realtime_quote = None
-            try:
-                realtime_quote = self.fetcher_manager.get_realtime_quote(code)
-                if realtime_quote:
-                    # 使用实时行情返回的真实股票名称
-                    if realtime_quote.name:
-                        stock_name = realtime_quote.name
-                    # 兼容不同数据源的字段（有些数据源可能没有 volume_ratio）
-                    volume_ratio = getattr(realtime_quote, 'volume_ratio', None)
-                    turnover_rate = getattr(realtime_quote, 'turnover_rate', None)
-                    logger.info(f"[{code}] {stock_name} 实时行情: 价格={realtime_quote.price}, "
-                              f"量比={volume_ratio}, 换手率={turnover_rate}% "
-                              f"(来源: {realtime_quote.source.value if hasattr(realtime_quote, 'source') else 'unknown'})")
-                else:
-                    logger.info(f"[{code}] 实时行情获取失败或已禁用，将使用历史数据进行分析")
-            except Exception as e:
-                logger.warning(f"[{code}] 获取实时行情失败: {e}")
+            if self._is_us_stock(code):
+                logger.info(f"[{code}] US stock — skipping yfinance realtime quote to conserve rate budget")
+            else:
+                try:
+                    realtime_quote = self.fetcher_manager.get_realtime_quote(code)
+                    if realtime_quote:
+                        # 使用实时行情返回的真实股票名称
+                        if realtime_quote.name:
+                            stock_name = realtime_quote.name
+                        # 兼容不同数据源的字段（有些数据源可能没有 volume_ratio）
+                        volume_ratio = getattr(realtime_quote, 'volume_ratio', None)
+                        turnover_rate = getattr(realtime_quote, 'turnover_rate', None)
+                        logger.info(f"[{code}] {stock_name} 实时行情: 价格={realtime_quote.price}, "
+                                  f"量比={volume_ratio}, 换手率={turnover_rate}% "
+                                  f"(来源: {realtime_quote.source.value if hasattr(realtime_quote, 'source') else 'unknown'})")
+                    else:
+                        logger.info(f"[{code}] 实时行情获取失败或已禁用，将使用历史数据进行分析")
+                except Exception as e:
+                    logger.warning(f"[{code}] 获取实时行情失败: {e}")
             
             # 如果还是没有名称，使用代码作为名称
             if not stock_name:
@@ -314,6 +319,29 @@ class StockAnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"[{code}] US stock enhanced analysis failed: {e}")
 
+            # Step 5.6: US Stock Module LLM Analysis (7-call mode)
+            us_module_insights = None
+            if (
+                us_stock_bundle is not None
+                and getattr(self.config, 'enable_us_module_llm', True)
+            ):
+                try:
+                    from src.us_stock_modules.module_analyzer import USStockModuleAnalyzer
+
+                    module_analyzer = USStockModuleAnalyzer(
+                        analyzer=self.analyzer,
+                        config=self.config,
+                    )
+                    us_module_insights = module_analyzer.analyze_all(
+                        code, stock_name, us_stock_bundle.to_dict()
+                    )
+                    logger.info(
+                        f"[{code}] US stock module LLM analysis completed "
+                        f"({us_module_insights.get_successful_count()}/6 modules)"
+                    )
+                except Exception as e:
+                    logger.warning(f"[{code}] US stock module LLM analysis failed: {e}")
+
             # Step 6: 增强上下文数据（添加实时行情、筹码、趋势分析结果、股票名称）
             enhanced_context = self._enhance_context(
                 context,
@@ -322,6 +350,7 @@ class StockAnalysisPipeline:
                 trend_result,
                 stock_name,  # 传入股票名称
                 us_stock_bundle=us_stock_bundle,  # Pass US stock bundle
+                us_module_insights=us_module_insights,  # Pass module LLM insights
             )
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
@@ -332,6 +361,48 @@ class StockAnalysisPipeline:
                 realtime_data = enhanced_context.get('realtime', {})
                 result.current_price = realtime_data.get('price')
                 result.change_pct = realtime_data.get('change_pct')
+
+            # Step 7.6: Inject module LLM insights into dashboard for frontend display
+            if result and us_module_insights is not None:
+                if result.dashboard is None:
+                    result.dashboard = {}
+                result.dashboard['us_module_insights'] = us_module_insights.to_dict()
+
+            # Step 7.7: Ensure sniper_points are populated (3-tier fallback)
+            if result and us_stock_bundle is not None:
+                sniper = result.get_sniper_points()
+                has_sniper = sniper and any(v for v in sniper.values() if v)
+                logger.info(
+                    f"[{code}] Step 7.7: sniper_points check — "
+                    f"has_sniper={has_sniper}, keys={list(sniper.keys()) if sniper else []}"
+                )
+                if not has_sniper:
+                    # Tier 2: LLM fallback with key context
+                    try:
+                        fallback_sniper = self._generate_sniper_points_via_llm(
+                            code, stock_name, result, us_stock_bundle, enhanced_context
+                        )
+                        if fallback_sniper:
+                            if result.dashboard is None:
+                                result.dashboard = {}
+                            bp = result.dashboard.setdefault("battle_plan", {})
+                            bp["sniper_points"] = fallback_sniper
+                            logger.info(f"[{code}] Generated sniper_points via LLM fallback (Tier 2)")
+                    except Exception as e:
+                        logger.warning(f"[{code}] LLM sniper_points fallback failed: {e}")
+
+                    # Re-check after Tier 2
+                    sniper = result.get_sniper_points()
+                    has_sniper = sniper and any(v for v in sniper.values() if v)
+                    if not has_sniper:
+                        # Tier 3: Formula from key_levels (100% reliable safety net)
+                        fallback_sniper = self._derive_sniper_from_key_levels(us_stock_bundle)
+                        if fallback_sniper:
+                            if result.dashboard is None:
+                                result.dashboard = {}
+                            bp = result.dashboard.setdefault("battle_plan", {})
+                            bp["sniper_points"] = fallback_sniper
+                            logger.info(f"[{code}] Derived sniper_points from key_levels (Tier 3)")
 
             # Step 8: 保存分析历史记录
             if result:
@@ -368,6 +439,7 @@ class StockAnalysisPipeline:
         trend_result: Optional[TrendAnalysisResult],
         stock_name: str = "",
         us_stock_bundle=None,
+        us_module_insights=None,
     ) -> Dict[str, Any]:
         """
         增强分析上下文
@@ -381,6 +453,7 @@ class StockAnalysisPipeline:
             trend_result: 趋势分析结果
             stock_name: 股票名称
             us_stock_bundle: USStockAnalysisBundle (for US stocks, or None)
+            us_module_insights: USStockModuleInsights (module LLM analyses, or None)
 
         Returns:
             增强后的上下文
@@ -445,6 +518,10 @@ class StockAnalysisPipeline:
         if us_stock_bundle is not None:
             enhanced['us_stock_bundle'] = us_stock_bundle.to_dict()
 
+        # Add US stock module LLM insights
+        if us_module_insights is not None:
+            enhanced['us_module_insights'] = us_module_insights.to_dict()
+
         return enhanced
     
     def _describe_volume_ratio(self, volume_ratio: float) -> str:
@@ -501,6 +578,181 @@ class StockAnalysisPipeline:
             except Exception:
                 return None
         return None
+
+    def _generate_sniper_points_via_llm(
+        self,
+        code: str,
+        stock_name: str,
+        result: AnalysisResult,
+        us_stock_bundle,
+        enhanced_context: Dict[str, Any],
+    ) -> Optional[Dict[str, str]]:
+        """
+        Call LLM to generate sniper_points when the synthesis LLM omitted them.
+
+        Builds a focused prompt with key context: current price, technical levels,
+        analysis conclusion, sentiment score, yesterday's move, market regime,
+        and battle_plan scenarios from the synthesis result.
+
+        Returns:
+            Dict with ideal_buy, secondary_buy, stop_loss, take_profit or None
+        """
+        from json_repair import repair_json
+
+        # Gather key context pieces
+        realtime = enhanced_context.get("realtime", {})
+        current_price = realtime.get("price")
+        change_pct = realtime.get("change_pct")
+
+        tech = getattr(us_stock_bundle, "technical", None)
+        key_levels = {}
+        latest_1d_chg = None
+        if tech:
+            key_levels = getattr(tech, "key_levels", {}) or {}
+            latest_1d_chg = getattr(tech, "latest_1d_chg_pct", None)
+
+        macro = getattr(us_stock_bundle, "macro", None)
+        market_regime = None
+        spy_chg = None
+        if macro:
+            market_regime = getattr(macro, "market_regime", None)
+            spy_chg = getattr(macro, "spy_1d_chg_pct", None)
+
+        # Build context summary for the prompt
+        context_lines = [f"Stock: {code} ({stock_name})"]
+        if current_price is not None:
+            context_lines.append(f"Current Price: ${current_price:.2f}")
+        if change_pct is not None:
+            context_lines.append(f"Today Change: {change_pct:+.2f}%")
+        if latest_1d_chg is not None:
+            context_lines.append(f"Yesterday Change: {latest_1d_chg:+.2f}%")
+
+        context_lines.append(f"Sentiment Score: {result.sentiment_score}/100")
+        context_lines.append(f"Trend Prediction: {result.trend_prediction}")
+        context_lines.append(f"Operation Advice: {result.operation_advice}")
+
+        if market_regime:
+            context_lines.append(f"Market Regime: {market_regime}")
+        if spy_chg is not None:
+            context_lines.append(f"SPY 1d Change: {spy_chg:+.2f}%")
+
+        if key_levels:
+            levels_str = ", ".join(f"{k}: ${v:.2f}" for k, v in key_levels.items() if isinstance(v, (int, float)))
+            if levels_str:
+                context_lines.append(f"Key Technical Levels: {levels_str}")
+
+        # Include analysis summary if available
+        summary = result.analysis_summary or ""
+        if summary:
+            context_lines.append(f"Analysis Summary: {summary[:500]}")
+
+        # Include battle_plan scenarios from synthesis result (the LLM already wrote price levels there)
+        if result.dashboard and "battle_plan" in result.dashboard:
+            bp = result.dashboard["battle_plan"]
+            scenarios = bp.get("scenarios", [])
+            if scenarios:
+                scenario_text = json.dumps(scenarios, ensure_ascii=False)[:500]
+                context_lines.append(f"Battle Plan Scenarios: {scenario_text}")
+            risk_warnings = bp.get("risk_warnings", [])
+            if risk_warnings:
+                context_lines.append(f"Risk Warnings: {'; '.join(str(w) for w in risk_warnings[:3])}")
+
+        context_block = "\n".join(context_lines)
+
+        system_prompt = (
+            "You are a precise stock trading analyst. Your ONLY task is to generate 4 specific price levels "
+            "for a stock based on the provided context. Return ONLY a JSON object with exactly these 4 fields:\n"
+            "- ideal_buy: The best entry price (must be a specific USD price with brief reasoning)\n"
+            "- secondary_buy: A secondary/safer entry price (must be a specific USD price with brief reasoning)\n"
+            "- stop_loss: The stop-loss price to limit downside (must be a specific USD price with brief reasoning)\n"
+            "- take_profit: The target price for taking profit (must be a specific USD price with brief reasoning)\n\n"
+            "Rules:\n"
+            "1. Every value MUST be a specific dollar price, e.g. '$185.50 (near S1 support, risk/reward favorable)'\n"
+            "2. Derive prices from the technical key levels (support/resistance), current price, and market context\n"
+            "3. ideal_buy should be near the strongest support level\n"
+            "4. secondary_buy should be at a deeper support level or a wider safety margin\n"
+            "5. stop_loss should be below the lowest relevant support (typically 2-5% below)\n"
+            "6. take_profit should be near resistance or a reasonable upside target\n"
+            "7. If the outlook is bearish, adjust levels conservatively (tighter stops, lower targets)\n"
+            "8. Return ONLY the JSON object, no markdown fences, no extra text"
+        )
+
+        user_prompt = (
+            f"Based on the following analysis context, generate the 4 sniper price points:\n\n"
+            f"{context_block}\n\n"
+            f"Return the JSON object with ideal_buy, secondary_buy, stop_loss, take_profit."
+        )
+
+        generation_config = {
+            "temperature": 0.3,
+            "max_output_tokens": 512,
+        }
+
+        logger.info(f"[{code}] Calling LLM to generate sniper_points (Tier 2 fallback)...")
+        logger.debug(f"[{code}] Sniper_points LLM prompt:\n{user_prompt}")
+        response_text = self.analyzer._call_api_with_retry(
+            user_prompt, generation_config, system_prompt_override=system_prompt
+        )
+        logger.debug(f"[{code}] Sniper_points LLM response: {response_text[:300]}")
+
+        # Parse JSON from response
+        cleaned = response_text.strip()
+        # Remove markdown fences if present
+        cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+
+        start = cleaned.find("{")
+        end = cleaned.rfind("}") + 1
+        if start >= 0 and end > start:
+            json_str = cleaned[start:end]
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError:
+                logger.debug(f"[{code}] Sniper_points JSON parse failed, trying json_repair")
+                repaired = repair_json(json_str)
+                data = json.loads(repaired)
+
+            required_keys = ["ideal_buy", "secondary_buy", "stop_loss", "take_profit"]
+            sniper_points = {}
+            for k in required_keys:
+                if k in data and data[k]:
+                    sniper_points[k] = str(data[k])
+            if sniper_points:
+                logger.info(f"[{code}] Sniper_points LLM returned {len(sniper_points)} fields")
+                return sniper_points
+            else:
+                logger.warning(f"[{code}] Sniper_points LLM returned empty values: {data}")
+                return None
+
+        logger.warning(f"[{code}] Sniper_points LLM response has no JSON object: {response_text[:200]}")
+        return None
+
+    def _derive_sniper_from_key_levels(self, us_stock_bundle) -> Optional[Dict[str, str]]:
+        """
+        Derive sniper_points from technical key_levels using simple formulas.
+        Used as Tier 3 fallback when both synthesis LLM and fallback LLM fail.
+        """
+        tech = getattr(us_stock_bundle, "technical", None)
+        if not tech:
+            return None
+        levels = getattr(tech, "key_levels", {}) or {}
+        if not levels:
+            return None
+
+        sniper = {}
+        if "support_1" in levels:
+            sniper["ideal_buy"] = f"${levels['support_1']:.2f} (S1 support)"
+        if "support_2" in levels:
+            sniper["secondary_buy"] = f"${levels['support_2']:.2f} (S2 support)"
+        # stop_loss: 3% below lowest support
+        lowest_support = levels.get("support_2") or levels.get("support_1")
+        if lowest_support:
+            stop = lowest_support * 0.97
+            sniper["stop_loss"] = f"${stop:.2f} (3% below support)"
+        if "resistance_1" in levels:
+            sniper["take_profit"] = f"${levels['resistance_1']:.2f} (R1 resistance)"
+
+        return sniper if sniper else None
 
     def _resolve_query_source(self, query_source: Optional[str]) -> str:
         """

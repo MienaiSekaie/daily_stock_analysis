@@ -124,39 +124,34 @@ class YfinanceFetcher(BaseFetcher):
     )
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
-        从 Yahoo Finance 获取原始数据
-        
-        使用 yfinance.download() 获取历史数据
-        
-        流程：
-        1. 转换股票代码格式
-        2. 调用 yfinance API
-        3. 处理返回数据
+        获取原始K线数据
+
+        策略：
+        - US stocks: handled by OpenBBFetcher (higher priority)
+        - A-shares / HK stocks: yfinance (as last resort fallback)
         """
-        from src.us_stock_modules.yf_utils import yf_download
+        import yfinance as yf
 
-        # 转换代码格式
         yf_code = self._convert_stock_code(stock_code)
-
         logger.debug(f"调用 yfinance.download({yf_code}, {start_date}, {end_date})")
 
         try:
-            # 使用 yfinance 下载数据 (rate-limited wrapper)
-            df = yf_download(
+            df = yf.download(
                 yf_code,
                 start=start_date,
                 end=end_date,
+                progress=False,
             )
-            
+
             if df.empty:
-                raise DataFetchError(f"Yahoo Finance 未查询到 {stock_code} 的数据")
-            
+                raise DataFetchError(f"未查询到 {stock_code} 的数据 (yfinance)")
+
             return df
-            
+
         except Exception as e:
             if isinstance(e, DataFetchError):
                 raise
-            raise DataFetchError(f"Yahoo Finance 获取数据失败: {e}") from e
+            raise DataFetchError(f"获取数据失败: {e}") from e
     
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
         """

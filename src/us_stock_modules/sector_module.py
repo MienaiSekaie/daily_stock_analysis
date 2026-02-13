@@ -7,7 +7,7 @@ Evaluates a stock's sector positioning:
 - Stock rank within sector peers
 - Stock vs sector ETF comparison
 
-All data sourced from yfinance (free).
+K-line data sourced from OpenBB SDK.
 """
 
 import logging
@@ -58,7 +58,7 @@ class SectorResult:
 
 
 class SectorModule:
-    """Sector context analyzer using yfinance."""
+    """Sector context analyzer using OpenBB SDK."""
 
     def analyze(self, code: str) -> Optional[SectorResult]:
         """
@@ -71,7 +71,7 @@ class SectorModule:
             SectorResult or None
         """
         try:
-            from src.us_stock_modules.yf_utils import yf_download
+            from src.us_stock_modules.openbb_utils import obb_price_historical
             from src.us_stock_modules.sector_mapping import get_sector_info, get_sector_peers
 
             sector_info = get_sector_info(code)
@@ -83,38 +83,30 @@ class SectorModule:
             )
 
             # Fetch 5-day returns for SPY, sector ETF, and the stock
-            tickers_to_fetch = [code, etf, "SPY"]
             peers = get_sector_peers(etf)
-            # Add peers (excluding the stock itself and limiting to 10)
-            peer_tickers = [p for p in peers if p != code][:10]
-            tickers_to_fetch.extend(peer_tickers)
+            # Add peers (excluding the stock itself and limiting to 5 to reduce API calls)
+            peer_tickers = [p for p in peers if p != code][:5]
+            all_tickers = list(dict.fromkeys([code, etf, "SPY"] + peer_tickers))
 
-            # Download all at once for efficiency
-            all_tickers = list(set(tickers_to_fetch))
-            data = yf_download(" ".join(all_tickers), period="10d", group_by="ticker")
-
-            if data is None or data.empty:
-                logger.warning(f"[{code}] No sector data available")
-                return result
-
-            # Calculate 5-day returns
+            # Download individually (cached) to reduce API calls
             returns = {}
             for ticker in all_tickers:
                 try:
-                    if len(all_tickers) == 1:
-                        closes = data["Close"]
-                    else:
-                        closes = data[ticker]["Close"]
-                    closes = closes.dropna()
-                    if len(closes) >= 2:
-                        # Use last available close vs 5 days ago (or earliest available)
-                        end_price = float(closes.iloc[-1])
-                        start_idx = max(0, len(closes) - 6)
-                        start_price = float(closes.iloc[start_idx])
-                        if start_price > 0:
-                            returns[ticker] = (end_price - start_price) / start_price * 100
+                    ticker_data = obb_price_historical(ticker, period="10d")
+                    if ticker_data is not None and len(ticker_data) >= 2:
+                        closes = ticker_data["Close"].dropna()
+                        if len(closes) >= 2:
+                            end_price = float(closes.iloc[-1])
+                            start_idx = max(0, len(closes) - 6)
+                            start_price = float(closes.iloc[start_idx])
+                            if start_price > 0:
+                                returns[ticker] = (end_price - start_price) / start_price * 100
                 except Exception:
                     continue
+
+            if not returns:
+                logger.warning(f"[{code}] No sector data available")
+                return result
 
             # Fill in results
             result.stock_5d_return = returns.get(code)
@@ -166,7 +158,7 @@ class SectorModule:
             return result
 
         except ImportError:
-            logger.error("yfinance not installed, cannot run sector analysis")
+            logger.error("openbb not installed, cannot run sector analysis")
             return None
         except Exception as e:
             logger.warning(f"[{code}] Sector analysis failed: {e}")

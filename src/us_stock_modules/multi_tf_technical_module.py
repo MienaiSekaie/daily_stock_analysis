@@ -40,6 +40,7 @@ class MultiTFResult:
     daily_macd_status: str = ""
     daily_volume_ratio: float = 1.0
     daily_volume_signal: str = ""  # "heavy_up" / "heavy_down" / "shrink_up" / "shrink_down" / "normal"
+    latest_1d_chg_pct: float = 0.0  # Latest day's price change %
 
     # Cycle resonance
     cycle_resonance: str = ""  # e.g. "bullish_pullback_buy"
@@ -71,6 +72,7 @@ class MultiTFResult:
                 "macd_status": self.daily_macd_status,
                 "volume_ratio": round(self.daily_volume_ratio, 2),
                 "volume_signal": self.daily_volume_signal,
+                "latest_1d_chg_pct": round(self.latest_1d_chg_pct, 2),
             },
             "cycle_resonance": self.cycle_resonance,
             "resonance_description": self.resonance_description,
@@ -155,6 +157,12 @@ class MultiTFTechnicalModule:
 
         current_price = float(df["close"].iloc[-1])
         result.key_levels["current"] = current_price
+
+        # Latest day's price change %
+        if len(df) >= 2:
+            prev_close = float(df["close"].iloc[-2])
+            if prev_close > 0:
+                result.latest_1d_chg_pct = (current_price - prev_close) / prev_close * 100
 
         # Weekly analysis
         weekly_df = self._resample_to_weekly(df)

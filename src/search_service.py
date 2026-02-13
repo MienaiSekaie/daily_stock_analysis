@@ -964,6 +964,24 @@ class SearchService:
             return True
         return False
 
+    # English name mapping for US stocks used in search queries
+    US_STOCK_ENGLISH_NAME = {
+        'AAPL': 'Apple', 'TSLA': 'Tesla', 'MSFT': 'Microsoft',
+        'GOOGL': 'Google', 'GOOG': 'Google', 'AMZN': 'Amazon',
+        'NVDA': 'NVIDIA', 'META': 'Meta', 'AMD': 'AMD',
+        'INTC': 'Intel', 'BABA': 'Alibaba', 'PDD': 'PDD Holdings',
+        'JD': 'JD.com', 'BIDU': 'Baidu', 'NIO': 'NIO',
+        'XPEV': 'XPeng', 'LI': 'Li Auto', 'COIN': 'Coinbase',
+        'MSTR': 'MicroStrategy',
+    }
+
+    def _get_search_name(self, stock_code: str, stock_name: str) -> str:
+        """Get the appropriate name for search queries.
+        For foreign stocks, use English name; for A-shares, use Chinese name."""
+        if self._is_foreign_stock(stock_code):
+            return self.US_STOCK_ENGLISH_NAME.get(stock_code.upper(), stock_code)
+        return stock_name
+
     @property
     def is_available(self) -> bool:
         """检查是否有可用的搜索引擎"""
@@ -1042,7 +1060,8 @@ class SearchService:
             query = " ".join(focus_keywords)
         elif is_foreign:
             # 港股/美股使用英文搜索关键词
-            query = f"{stock_name} {stock_code} stock latest news"
+            search_name = self._get_search_name(stock_code, stock_name)
+            query = f"{search_name} {stock_code} stock latest news"
         else:
             # 默认主查询：股票名称 + 核心关键词
             query = f"{stock_name} {stock_code} 股票 最新消息"
@@ -1106,7 +1125,8 @@ class SearchService:
         
         # 构建针对性查询
         event_query = " OR ".join(event_types)
-        query = f"{stock_name} ({event_query})"
+        search_name = self._get_search_name(stock_code, stock_name)
+        query = f"{search_name} ({event_query})"
         
         logger.info(f"搜索股票事件: {stock_name}({stock_code}) - {event_types}")
         
@@ -1158,30 +1178,31 @@ class SearchService:
 
         # 定义搜索维度
         if is_foreign:
+            search_name = self._get_search_name(stock_code, stock_name)
             search_dimensions = [
                 {
                     'name': 'latest_news',
-                    'query': f"{stock_name} {stock_code} latest news events",
+                    'query': f"{search_name} {stock_code} latest news events",
                     'desc': '最新消息'
                 },
                 {
                     'name': 'market_analysis',
-                    'query': f"{stock_name} analyst rating target price report",
+                    'query': f"{search_name} analyst rating target price report",
                     'desc': '机构分析'
                 },
                 {
                     'name': 'risk_check',
-                    'query': f"{stock_name} risk insider selling lawsuit litigation",
+                    'query': f"{search_name} risk insider selling lawsuit litigation",
                     'desc': '风险排查'
                 },
                 {
                     'name': 'earnings',
-                    'query': f"{stock_name} earnings revenue profit growth forecast",
+                    'query': f"{search_name} earnings revenue profit growth forecast",
                     'desc': '业绩预期'
                 },
                 {
                     'name': 'industry',
-                    'query': f"{stock_name} industry competitors market share outlook",
+                    'query': f"{search_name} industry competitors market share outlook",
                     'desc': '行业分析'
                 },
             ]

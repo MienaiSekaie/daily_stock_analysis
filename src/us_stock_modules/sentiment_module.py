@@ -2,17 +2,15 @@
 """
 Module 6: Sentiment & Flow
 
-Evaluates market sentiment and institutional positioning:
+Evaluates market sentiment:
 - Analyst ratings consensus (Buy/Hold/Sell distribution)
 - Analyst price targets (upside/downside potential)
-- Institutional holders (top holders, ownership %)
-- News sentiment (keyword-based scoring from existing news context)
+- News sentiment via Alpha Vantage NEWS_SENTIMENT API
 
-Data sources (yfinance only, no Reddit/Stocktwits APIs):
-- Analyst ratings: yf.Ticker.recommendations
-- Price targets: yf.Ticker.info (targetMeanPrice, etc.)
-- Institutional: yf.Ticker.institutional_holders
-- News: keyword analysis on pre-fetched news_context string
+Data sources:
+- Analyst ratings & price targets: OpenBB SDK (FMP consensus)
+- News sentiment: Alpha Vantage NEWS_SENTIMENT (AI-scored per ticker)
+- Fallback: keyword analysis on pre-fetched news_context string
 """
 
 import logging
@@ -21,25 +19,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
-
-# Keyword lists for basic news sentiment scoring
-POSITIVE_KEYWORDS = [
-    "beat", "beats", "exceeded", "surpass", "upgrade", "upgraded", "outperform",
-    "bullish", "rally", "surge", "soar", "gain", "gains", "record", "strong",
-    "growth", "profitable", "dividend", "buyback", "expansion", "innovative",
-    "breakthrough", "optimistic", "positive", "upside", "buy", "accumulate",
-    "overweight", "above expectations", "better than expected", "raised guidance",
-    "all-time high", "market leader",
-]
-
-NEGATIVE_KEYWORDS = [
-    "miss", "missed", "below", "downgrade", "downgraded", "underperform",
-    "bearish", "decline", "drop", "fall", "loss", "losses", "weak", "warning",
-    "layoff", "layoffs", "restructuring", "lawsuit", "investigation", "recall",
-    "negative", "downside", "sell", "underweight", "reduce", "below expectations",
-    "worse than expected", "lowered guidance", "cut guidance", "bankruptcy",
-    "debt concern", "margin pressure",
-]
 
 
 @dataclass
@@ -93,16 +72,18 @@ class SentimentResult:
 
 
 class SentimentModule:
-    """Sentiment & flow analyzer using yfinance data."""
+    """Sentiment & flow analyzer using OpenBB SDK data."""
 
     def analyze(self, code: str, news_context: Optional[str] = None) -> Optional[SentimentResult]:
         """
-        Analyze sentiment from analyst ratings, price targets, institutional holders,
-        and news keyword analysis.
+        Analyze sentiment from analyst ratings, price targets, and news.
+
+        Uses Alpha Vantage NEWS_SENTIMENT for AI-scored news analysis,
+        falling back to keyword matching on news_context if AV unavailable.
 
         Args:
             code: US stock ticker
-            news_context: Pre-formatted news text from SearchService
+            news_context: Pre-formatted news text from SearchService (fallback)
 
         Returns:
             SentimentResult or None
@@ -110,29 +91,82 @@ class SentimentModule:
         try:
             result = SentimentResult()
 
-            # 1. News sentiment (no API call needed)
-            if news_context:
-                self._analyze_news_sentiment(news_context, result)
-
-            # 2. yfinance-based data
+            # 1. News sentiment via Alpha Vantage NEWS_SENTIMENT
+            av_news_used = False
             try:
-                from src.us_stock_modules.yf_utils import yf_ticker, yf_ticker_info
-                ticker = yf_ticker(code)
-                info = yf_ticker_info(code) if ticker else {}
+                from src.us_stock_modules.openbb_utils import av_news_sentiment
 
-                if ticker is not None:
-                    # 2a. Analyst ratings
-                    self._analyze_analyst_ratings(ticker, code, result)
+                news = av_news_sentiment(code, limit=50)
+                if news and news.get("total_scored", 0) > 0:
+                    result.news_positive_count = news["positive_count"]
+                    result.news_negative_count = news["negative_count"]
+                    result.news_sentiment = news["sentiment_label"]
+                    av_news_used = True
+                    logger.debug(
+                        f"[{code}] AV news sentiment: {news['sentiment_label']}, "
+                        f"+{news['positive_count']}/-{news['negative_count']}, "
+                        f"avg={news['avg_sentiment']:.3f}"
+                    )
+            except Exception as e:
+                logger.debug(f"[{code}] AV news sentiment failed: {e}")
 
-                # 2b. Price targets
-                self._analyze_price_targets(info, code, result)
+            # 1b. Fallback: keyword analysis on pre-fetched news_context
+            if not av_news_used and news_context:
+                self._analyze_news_keywords(news_context, result)
 
-                if ticker is not None:
-                    # 2c. Institutional holders
-                    self._analyze_institutional(ticker, info, code, result)
+            # 2. Analyst consensus and price targets (FMP via OpenBB)
+            try:
+                from src.us_stock_modules.openbb_utils import (
+                    obb_analyst_consensus,
+                    obb_price_historical,
+                )
 
-            except ImportError:
-                logger.warning("yfinance not installed, skipping analyst/institutional data")
+                consensus = obb_analyst_consensus(code)
+                if consensus:
+                    # 2a. Analyst ratings (from AV sentiment distribution)
+                    strong_buy = int(consensus.get("strong_buy_ratings") or 0)
+                    buy = int(consensus.get("buy_ratings") or 0)
+                    hold = int(consensus.get("hold_ratings") or 0)
+                    sell = int(consensus.get("sell_ratings") or 0)
+                    strong_sell = int(consensus.get("strong_sell_ratings") or 0)
+
+                    result.analyst_buy = strong_buy + buy
+                    result.analyst_hold = hold
+                    result.analyst_sell = sell + strong_sell
+                    result.analyst_total = result.analyst_buy + result.analyst_hold + result.analyst_sell
+
+                    if result.analyst_total > 0:
+                        buy_pct = result.analyst_buy / result.analyst_total
+                        sell_pct = result.analyst_sell / result.analyst_total
+                        if buy_pct >= 0.7:
+                            result.analyst_consensus = "strong_buy"
+                        elif buy_pct >= 0.5:
+                            result.analyst_consensus = "buy"
+                        elif sell_pct >= 0.7:
+                            result.analyst_consensus = "strong_sell"
+                        elif sell_pct >= 0.5:
+                            result.analyst_consensus = "sell"
+                        else:
+                            result.analyst_consensus = "hold"
+
+                    # 2b. Price targets (FMP consensus)
+                    result.target_mean = self._safe_float(consensus.get("consensus_price_target"))
+                    result.target_high = self._safe_float(consensus.get("high_price_target"))
+                    result.target_low = self._safe_float(consensus.get("low_price_target"))
+                    result.num_analysts = consensus.get("num_analysts") or result.analyst_total
+
+                    # Current price for upside calculation
+                    if result.target_mean is not None:
+                        hist = obb_price_historical(code, period="5d")
+                        if hist is not None and len(hist) > 0:
+                            current_price = float(hist["Close"].iloc[-1])
+                            if current_price > 0:
+                                result.target_upside_pct = (
+                                    (result.target_mean - current_price) / current_price
+                                ) * 100
+
+            except Exception as e:
+                logger.debug(f"[{code}] Could not fetch analyst data from OpenBB: {e}")
 
             # Score
             self._calculate_score(result)
@@ -148,18 +182,23 @@ class SentimentModule:
             logger.warning(f"[{code}] Sentiment analysis failed: {e}")
             return None
 
-    def _analyze_news_sentiment(self, news_context: str, result: SentimentResult) -> None:
-        """Analyze news text for positive/negative keyword counts."""
+    def _analyze_news_keywords(self, news_context: str, result: SentimentResult) -> None:
+        """Fallback: keyword-based news sentiment when AV is unavailable."""
         try:
             text_lower = news_context.lower()
+            positive_kw = [
+                "beat", "exceeded", "upgrade", "outperform", "bullish", "rally",
+                "surge", "record", "strong", "growth", "buyback", "optimistic",
+            ]
+            negative_kw = [
+                "miss", "downgrade", "underperform", "bearish", "decline", "drop",
+                "loss", "weak", "warning", "layoff", "lawsuit", "bankruptcy",
+            ]
 
-            for keyword in POSITIVE_KEYWORDS:
-                count = len(re.findall(r'\b' + re.escape(keyword) + r'\b', text_lower))
-                result.news_positive_count += count
-
-            for keyword in NEGATIVE_KEYWORDS:
-                count = len(re.findall(r'\b' + re.escape(keyword) + r'\b', text_lower))
-                result.news_negative_count += count
+            for keyword in positive_kw:
+                result.news_positive_count += len(re.findall(r'\b' + re.escape(keyword) + r'\b', text_lower))
+            for keyword in negative_kw:
+                result.news_negative_count += len(re.findall(r'\b' + re.escape(keyword) + r'\b', text_lower))
 
             total = result.news_positive_count + result.news_negative_count
             if total == 0:
@@ -170,118 +209,22 @@ class SentimentModule:
                 result.news_sentiment = "negative"
             else:
                 result.news_sentiment = "neutral"
-
         except Exception as e:
-            logger.debug(f"News sentiment analysis failed: {e}")
+            logger.debug(f"Keyword news analysis failed: {e}")
             result.news_sentiment = "neutral"
 
-    def _analyze_analyst_ratings(self, ticker, code: str, result: SentimentResult) -> None:
-        """Extract analyst rating consensus from yfinance recommendations."""
+    @staticmethod
+    def _safe_float(value) -> Optional[float]:
+        """Safely convert a value to float."""
+        if value is None:
+            return None
         try:
-            recs = ticker.recommendations
-            if recs is None or len(recs) == 0:
-                return
-
-            import pandas as pd
-
-            # Get recent recommendations (last 90 days)
-            if hasattr(recs.index, 'tz_localize'):
-                now = pd.Timestamp.now(tz=recs.index.tz) if recs.index.tz else pd.Timestamp.now()
-            else:
-                now = pd.Timestamp.now()
-
-            cutoff = now - pd.Timedelta(days=90)
-            recent = recs[recs.index >= cutoff] if len(recs) > 0 else recs
-
-            if len(recent) == 0:
-                # Fall back to all available data
-                recent = recs.tail(20)
-
-            # Count ratings — yfinance recommendations have different column formats
-            buy_count = 0
-            hold_count = 0
-            sell_count = 0
-
-            if "To Grade" in recent.columns:
-                # Old format: Firm, To Grade, From Grade, Action
-                for grade in recent["To Grade"].str.lower():
-                    if any(kw in str(grade) for kw in ["buy", "outperform", "overweight", "accumulate", "positive"]):
-                        buy_count += 1
-                    elif any(kw in str(grade) for kw in ["sell", "underperform", "underweight", "negative", "reduce"]):
-                        sell_count += 1
-                    else:
-                        hold_count += 1
-            elif "strongBuy" in recent.columns:
-                # New format: strongBuy, buy, hold, sell, strongSell (aggregated)
-                row = recent.iloc[-1]
-                buy_count = int(row.get("strongBuy", 0) or 0) + int(row.get("buy", 0) or 0)
-                hold_count = int(row.get("hold", 0) or 0)
-                sell_count = int(row.get("sell", 0) or 0) + int(row.get("strongSell", 0) or 0)
-
-            result.analyst_buy = buy_count
-            result.analyst_hold = hold_count
-            result.analyst_sell = sell_count
-            result.analyst_total = buy_count + hold_count + sell_count
-
-            # Determine consensus
-            if result.analyst_total > 0:
-                buy_pct = buy_count / result.analyst_total
-                sell_pct = sell_count / result.analyst_total
-                if buy_pct >= 0.7:
-                    result.analyst_consensus = "strong_buy"
-                elif buy_pct >= 0.5:
-                    result.analyst_consensus = "buy"
-                elif sell_pct >= 0.5:
-                    result.analyst_consensus = "sell"
-                elif sell_pct >= 0.7:
-                    result.analyst_consensus = "strong_sell"
-                else:
-                    result.analyst_consensus = "hold"
-
-        except Exception as e:
-            logger.debug(f"[{code}] Could not fetch analyst ratings: {e}")
-
-    def _analyze_price_targets(self, info: dict, code: str, result: SentimentResult) -> None:
-        """Extract analyst price targets from yfinance info."""
-        try:
-            result.target_mean = info.get("targetMeanPrice")
-            result.target_high = info.get("targetHighPrice")
-            result.target_low = info.get("targetLowPrice")
-            result.num_analysts = info.get("numberOfAnalystOpinions")
-
-            current_price = info.get("currentPrice") or info.get("regularMarketPrice")
-
-            if result.target_mean is not None and current_price is not None and current_price > 0:
-                result.target_upside_pct = ((result.target_mean - current_price) / current_price) * 100
-
-        except Exception as e:
-            logger.debug(f"[{code}] Could not fetch price targets: {e}")
-
-    def _analyze_institutional(self, ticker, info: dict, code: str, result: SentimentResult) -> None:
-        """Extract institutional holder data."""
-        try:
-            # Institutional ownership percentage from info
-            inst_pct = info.get("heldPercentInstitutions")
-            if inst_pct is not None:
-                result.institutional_pct = float(inst_pct) * 100  # Convert to %
-
-            # Top institutional holders
-            try:
-                holders = ticker.institutional_holders
-                if holders is not None and len(holders) > 0:
-                    top5 = holders.head(5)
-                    for _, row in top5.iterrows():
-                        holder_info = {
-                            "name": str(row.get("Holder", "")),
-                            "shares": int(row.get("Shares", 0)) if row.get("Shares") is not None else 0,
-                            "pct": round(float(row.get("% Out", 0)) * 100, 2) if row.get("% Out") is not None else None,
-                        }
-                        result.top_holders.append(holder_info)
-            except Exception as e:
-                logger.debug(f"[{code}] Could not fetch institutional holders: {e}")
-
-        except Exception as e:
-            logger.debug(f"[{code}] Institutional analysis failed: {e}")
+            v = float(value)
+            if v != v:  # NaN check
+                return None
+            return v
+        except (TypeError, ValueError):
+            return None
 
     def _calculate_score(self, result: SentimentResult) -> None:
         """

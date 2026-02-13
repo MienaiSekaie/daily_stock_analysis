@@ -3,19 +3,19 @@
 Module 1: Macro Environment (Market Regime)
 
 Evaluates overall US market conditions using:
-- SPY vs MA50 (broad market trend)
+- S&P 500 vs MA50 (broad market trend)
 - VIX (fear/greed)
 - 10Y Treasury yield (rate environment)
-- DXY Dollar index (currency strength)
+- Trade Weighted Dollar Index (currency strength)
 
-All data sourced from yfinance (free).
+All data sourced from FRED (Federal Reserve Economic Data).
 Results are cached since macro data is shared across all stocks in a batch.
 """
 
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, timedelta
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,7 @@ class MacroResult:
     spy_vs_ma50_pct: float = 0.0
     spy_trend: str = "unknown"  # "above_ma50" / "below_ma50"
     spy_price: float = 0.0
+    spy_1d_chg_pct: float = 0.0  # SPY latest daily change %
 
     vix: float = 0.0
     vix_signal: str = "unknown"  # "calm" / "elevated" / "panic"
@@ -47,6 +48,7 @@ class MacroResult:
             "spy_vs_ma50_pct": round(self.spy_vs_ma50_pct, 2),
             "spy_trend": self.spy_trend,
             "spy_price": round(self.spy_price, 2),
+            "spy_1d_chg_pct": round(self.spy_1d_chg_pct, 2),
             "vix": round(self.vix, 2),
             "vix_signal": self.vix_signal,
             "us10y_yield": round(self.us10y_yield, 2),
@@ -63,7 +65,7 @@ class MacroModule:
     """
     Macro environment analyzer.
 
-    Fetches SPY, VIX, 10Y yield, and DXY via yfinance.
+    Fetches S&P 500, VIX, 10Y yield, and Dollar Index via FRED API.
     Uses class-level cache so batch analyses share the same macro data.
     """
 
@@ -88,24 +90,38 @@ class MacroModule:
             return MacroModule._cache
 
         try:
-            from src.us_stock_modules.yf_utils import yf_download
+            from src.us_stock_modules.openbb_utils import obb_fred_series
 
             result = MacroResult()
             scores = {}
 
-            # 1. SPY vs MA50 (25% weight)
+            today = date.today()
+            four_months_ago = (today - timedelta(days=125)).isoformat()
+
+            # Batch-fetch all 4 FRED series in one call (uses earliest start date)
+            series_data = obb_fred_series(
+                ["SP500", "VIXCLS", "DGS10", "DTWEXBGS"],
+                observation_start=four_months_ago,
+            )
+
+            # 1. S&P 500 vs MA50 (25% weight)
             try:
-                spy_data = yf_download("SPY", period="4mo")
-                if spy_data is not None and len(spy_data) >= 50:
-                    spy_close = spy_data["Close"]
-                    ma50 = spy_close.rolling(50).mean()
-                    latest_price = float(spy_close.iloc[-1])
+                sp500_data = series_data.get("SP500")
+                if sp500_data is not None and len(sp500_data) >= 50:
+                    ma50 = sp500_data.rolling(50).mean()
+                    latest_price = float(sp500_data.iloc[-1])
                     latest_ma50 = float(ma50.iloc[-1])
 
                     result.spy_price = latest_price
                     if latest_ma50 > 0:
                         result.spy_vs_ma50_pct = (latest_price - latest_ma50) / latest_ma50 * 100
                     result.spy_trend = "above_ma50" if latest_price > latest_ma50 else "below_ma50"
+
+                    # SPY latest daily change %
+                    if len(sp500_data) >= 2:
+                        prev_price = float(sp500_data.iloc[-2])
+                        if prev_price > 0:
+                            result.spy_1d_chg_pct = (latest_price - prev_price) / prev_price * 100
 
                     # Score: above MA50 and rising = good
                     pct = result.spy_vs_ma50_pct
@@ -122,14 +138,14 @@ class MacroModule:
                     else:
                         scores["spy"] = 15
             except Exception as e:
-                logger.warning(f"Failed to fetch SPY data: {e}")
+                logger.warning(f"Failed to fetch S&P 500 data from FRED: {e}")
                 scores["spy"] = 50
 
             # 2. VIX (25% weight)
             try:
-                vix_data = yf_download("^VIX", period="5d")
+                vix_data = series_data.get("VIXCLS")
                 if vix_data is not None and len(vix_data) > 0:
-                    result.vix = float(vix_data["Close"].iloc[-1])
+                    result.vix = float(vix_data.iloc[-1])
 
                     if result.vix < 15:
                         result.vix_signal = "calm"
@@ -150,14 +166,14 @@ class MacroModule:
                         result.vix_signal = "panic"
                         scores["vix"] = 10
             except Exception as e:
-                logger.warning(f"Failed to fetch VIX data: {e}")
+                logger.warning(f"Failed to fetch VIX data from FRED: {e}")
                 scores["vix"] = 50
 
             # 3. 10Y Treasury Yield (25% weight)
             try:
-                tnx_data = yf_download("^TNX", period="5d")
-                if tnx_data is not None and len(tnx_data) > 0:
-                    result.us10y_yield = float(tnx_data["Close"].iloc[-1])
+                dgs10_data = series_data.get("DGS10")
+                if dgs10_data is not None and len(dgs10_data) > 0:
+                    result.us10y_yield = float(dgs10_data.iloc[-1])
 
                     # Lower yields generally better for stocks
                     yld = result.us10y_yield
@@ -177,34 +193,37 @@ class MacroModule:
                         result.us10y_signal = "high"
                         scores["us10y"] = 20
             except Exception as e:
-                logger.warning(f"Failed to fetch 10Y yield data: {e}")
+                logger.warning(f"Failed to fetch 10Y yield data from FRED: {e}")
                 scores["us10y"] = 50
 
-            # 4. DXY Dollar Index (25% weight)
+            # 4. Trade Weighted Dollar Index (25% weight)
+            # DTWEXBGS: Trade Weighted U.S. Dollar Index: Broad, Goods and Services
+            # Weekly data, scale ~110-135 (different from DXY ~95-115)
             try:
-                dxy_data = yf_download("DX-Y.NYB", period="5d")
+                dxy_data = series_data.get("DTWEXBGS")
                 if dxy_data is not None and len(dxy_data) > 0:
-                    result.dxy = float(dxy_data["Close"].iloc[-1])
+                    result.dxy = float(dxy_data.iloc[-1])
 
                     # Strong dollar generally headwind for stocks
+                    # Thresholds calibrated for DTWEXBGS scale (~110-135)
                     dxy = result.dxy
-                    if dxy < 98:
+                    if dxy < 115:
                         result.dxy_signal = "weak"
                         scores["dxy"] = 80
-                    elif dxy < 102:
+                    elif dxy < 120:
                         result.dxy_signal = "neutral"
                         scores["dxy"] = 65
-                    elif dxy < 105:
+                    elif dxy < 125:
                         result.dxy_signal = "neutral"
                         scores["dxy"] = 50
-                    elif dxy < 108:
+                    elif dxy < 130:
                         result.dxy_signal = "strong"
                         scores["dxy"] = 35
                     else:
                         result.dxy_signal = "strong"
                         scores["dxy"] = 20
             except Exception as e:
-                logger.warning(f"Failed to fetch DXY data: {e}")
+                logger.warning(f"Failed to fetch Dollar Index data from FRED: {e}")
                 scores["dxy"] = 50
 
             # Compute weighted score
@@ -232,12 +251,12 @@ class MacroModule:
 
             logger.info(
                 f"Macro analysis: regime={result.market_regime}, score={result.score}, "
-                f"SPY={result.spy_vs_ma50_pct:+.1f}% vs MA50, VIX={result.vix:.1f}"
+                f"SP500={result.spy_vs_ma50_pct:+.1f}% vs MA50, VIX={result.vix:.1f}"
             )
             return result
 
         except ImportError:
-            logger.error("yfinance not installed, cannot run macro analysis")
+            logger.error("openbb not installed, cannot run macro analysis")
             return None
         except Exception as e:
             logger.error(f"Macro analysis failed: {e}")

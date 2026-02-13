@@ -1085,6 +1085,12 @@ class DatabaseManager:
     def _parse_sniper_value(value: Any) -> Optional[float]:
         """
         解析狙击点位数值
+
+        Handles multiple formats:
+        - Pure numbers: "243.50"
+        - USD format: "$243.50", "$243.50 (S1 support)"
+        - Chinese format: "建议买入价：1800元左右"
+        - Mixed: "243.50美元"
         """
         if value is None:
             return None
@@ -1101,13 +1107,21 @@ class DatabaseManager:
         except ValueError:
             pass
 
+        # USD format: extract number after $ sign, e.g. "$243.50 (S1 support)"
+        dollar_match = re.search(r'\$\s*(-?\d+(?:\.\d+)?)', text)
+        if dollar_match:
+            try:
+                return float(dollar_match.group(1))
+            except ValueError:
+                pass
+
         # 优先截取 "：" 到 "元" 之间的价格，避免误提取 MA5/MA10 等技术指标数字
         colon_pos = max(text.rfind("："), text.rfind(":"))
         yuan_pos = text.find("元", colon_pos + 1 if colon_pos != -1 else 0)
         if yuan_pos != -1:
             segment_start = colon_pos + 1 if colon_pos != -1 else 0
             segment = text[segment_start:yuan_pos]
-            
+
             # 使用 finditer 并过滤掉 MA 开头的数字
             matches = list(re.finditer(r"-?\d+(?:\.\d+)?", segment))
             valid_numbers = []
@@ -1119,12 +1133,26 @@ class DatabaseManager:
                     if prefix == "MA":
                         continue
                 valid_numbers.append(m.group())
-            
+
             if valid_numbers:
                 try:
                     return float(valid_numbers[-1])
                 except ValueError:
                     pass
+
+        # General fallback: extract first reasonable number (>1) from the text,
+        # filtering out MA-prefixed numbers and small indices like S1/R1
+        matches = list(re.finditer(r'-?\d+(?:\.\d+)?', text))
+        for m in matches:
+            start_idx = m.start()
+            # Skip MA-prefixed numbers (MA5, MA10, MA20, etc.)
+            if start_idx >= 2 and text[start_idx - 2:start_idx].upper() == "MA":
+                continue
+            # Skip single-digit numbers likely to be labels (S1, R1, etc.)
+            num = float(m.group())
+            if num > 1:
+                return num
+
         return None
 
     def _extract_sniper_points(self, result: Any) -> Dict[str, Optional[float]]:

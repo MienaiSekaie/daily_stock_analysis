@@ -162,6 +162,25 @@ class Config:
     enable_us_stock_enhanced: bool = True  # Master switch for 6-module US stock analysis
     us_stock_macro_cache_ttl: int = 3600   # Macro data cache duration in seconds
     us_stock_yfinance_timeout: int = 10    # yfinance request timeout in seconds
+    us_stock_max_workers: int = 1          # Max concurrent workers for US stock module analysis
+    # Module-level LLM analysis (7-call mode)
+    enable_us_module_llm: bool = True      # Enable per-module LLM analysis (6+1 calls per symbol)
+    us_module_llm_max_workers: int = 2     # Max concurrent module LLM calls
+    us_module_llm_temperature: float = 0.7  # Temperature for module LLM calls
+    us_module_llm_max_tokens: int = 2048   # Max output tokens per module LLM response
+
+    # === Massive API (US stock K-line data, formerly Polygon.io) ===
+    massive_api_key: Optional[str] = None
+
+    # === FRED API (macro economic data) ===
+    fred_api_key: Optional[str] = None
+
+    # === OpenBB SDK Provider Preferences ===
+    openbb_price_provider: str = "polygon"       # equity.price.historical provider
+    openbb_fundamental_provider: str = "fmp"     # fundamental.ratios/income provider
+    openbb_earnings_provider: str = "fmp"        # calendar.earnings provider
+    openbb_macro_provider: str = "fred"          # economy.fred_series provider
+    openbb_cache_ttl: int = 3600                 # shared cache TTL in seconds
 
     # === 系统配置 ===
     max_workers: int = 3  # 低并发防封禁
@@ -286,6 +305,7 @@ class Config:
                 'szse.cn',         # 深交所
                 'csindex.com.cn',  # 中证指数
                 'cninfo.com.cn',   # 巨潮资讯
+                'nasdaq.com',      # Nasdaq earnings calendar (Cloudflare blocks proxies)
                 'localhost',
                 '127.0.0.1'
             ]
@@ -409,6 +429,22 @@ class Config:
             enable_us_stock_enhanced=os.getenv('ENABLE_US_STOCK_ENHANCED', 'true').lower() == 'true',
             us_stock_macro_cache_ttl=int(os.getenv('US_STOCK_MACRO_CACHE_TTL', '3600')),
             us_stock_yfinance_timeout=int(os.getenv('US_STOCK_YFINANCE_TIMEOUT', '10')),
+            us_stock_max_workers=int(os.getenv('US_STOCK_MAX_WORKERS', '1')),
+            # Module-level LLM analysis (7-call mode)
+            enable_us_module_llm=os.getenv('ENABLE_US_MODULE_LLM', 'true').lower() == 'true',
+            us_module_llm_max_workers=int(os.getenv('US_MODULE_LLM_MAX_WORKERS', '2')),
+            us_module_llm_temperature=float(os.getenv('US_MODULE_LLM_TEMPERATURE', '0.7')),
+            us_module_llm_max_tokens=int(os.getenv('US_MODULE_LLM_MAX_TOKENS', '2048')),
+            # Massive API (US stock K-line data)
+            massive_api_key=os.getenv('MASSIVE_API_KEY'),
+            # FRED API (macro economic data)
+            fred_api_key=os.getenv('FRED_API_KEY'),
+            # OpenBB SDK Provider Preferences
+            openbb_price_provider=os.getenv('OPENBB_PRICE_PROVIDER', 'polygon'),
+            openbb_fundamental_provider=os.getenv('OPENBB_FUNDAMENTAL_PROVIDER', 'fmp'),
+            openbb_earnings_provider=os.getenv('OPENBB_EARNINGS_PROVIDER', 'fmp'),
+            openbb_macro_provider=os.getenv('OPENBB_MACRO_PROVIDER', 'fred'),
+            openbb_cache_ttl=int(os.getenv('OPENBB_CACHE_TTL', '3600')),
             max_workers=int(os.getenv('MAX_WORKERS', '3')),
             debug=os.getenv('DEBUG', 'false').lower() == 'true',
             http_proxy=os.getenv('HTTP_PROXY'),

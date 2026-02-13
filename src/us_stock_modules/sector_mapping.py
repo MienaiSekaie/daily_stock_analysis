@@ -3,7 +3,7 @@
 Stock → Sector ETF Mapping
 
 ~50 popular US stocks mapped to their primary sector ETF.
-For stocks not in this map, falls back to yfinance info['sector']
+For stocks not in this map, returns default sector (XLK).
 matched to the closest sector ETF.
 """
 
@@ -137,24 +137,12 @@ def get_sector_info(code: str) -> dict:
     Get sector info for a stock.
 
     Returns dict with 'etf', 'sector', 'sub_sector'.
-    Falls back to yfinance lookup for unmapped stocks.
+    Returns default sector for unmapped stocks.
     """
     if code in SECTOR_MAP:
         return SECTOR_MAP[code]
 
-    # Fallback: try yfinance
-    try:
-        import yfinance as yf
-        info = yf.Ticker(code).info
-        sector = info.get("sector", "")
-        etf = SECTOR_NAME_TO_ETF.get(sector, "XLK")  # Default to XLK
-        return {
-            "etf": etf,
-            "sector": sector or "Unknown",
-            "sub_sector": info.get("industry", "Unknown"),
-        }
-    except Exception:
-        return {"etf": "XLK", "sector": "Unknown", "sub_sector": "Unknown"}
+    return {"etf": "XLK", "sector": "Unknown", "sub_sector": "Unknown"}
 
 
 def get_sector_peers(etf: str) -> list:

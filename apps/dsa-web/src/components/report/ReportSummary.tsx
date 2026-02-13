@@ -41,7 +41,10 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
       <ReportPrice meta={meta} />
 
       {/* US 6-Module Scoring */}
-      <ReportUsModules usModules={details?.dashboard?.usModules} />
+      <ReportUsModules
+        usModules={details?.dashboard?.usModules}
+        moduleInsights={details?.dashboard?.usModuleInsights}
+      />
 
       {/* 策略点位区 */}
       <ReportStrategy strategy={strategy} />
